@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use lazy_static::lazy_static;
+use ethers::{ prelude::*, providers::Provider, types::Address };
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct TokenInfo {
@@ -125,4 +127,22 @@ pub fn get_token_by_symbol(symbol: &str) -> Option<&TokenInfo> {
 pub fn get_token_by_address(address: &str) -> Option<&TokenInfo> {
     let address_lower = address.to_lowercase();
     ERC20_TOKENS.values().find(|t| t.address.to_lowercase() == address_lower)
+}
+
+pub fn get_erc20_contract<M: Middleware + 'static>(
+    token_address: Address,
+    provider: Arc<M>
+) -> Contract<M> {
+    let abi = ethers::abi
+        ::parse_abi(
+            &[
+                "function balanceOf(address) view returns (uint256)",
+                "function transfer(address to, uint256 amount) returns (bool)",
+                "function decimals() view returns (uint8)",
+                "function symbol() view returns (string)",
+            ]
+        )
+        .expect("Failed to parse ERC20 ABI");
+
+    Contract::new(token_address, abi, provider)
 }

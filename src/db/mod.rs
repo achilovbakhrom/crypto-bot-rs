@@ -6,6 +6,9 @@ use crate::error::{ AppError, Result };
 pub mod entity;
 pub use entity::*;
 
+mod transaction_repository;
+pub use transaction_repository::TransactionRepository;
+
 pub struct WalletRepository {
     db: DatabaseConnection,
 }
@@ -48,6 +51,15 @@ impl WalletRepository {
             ::find()
             .filter(entity::wallet::Column::UserId.eq(user_id))
             .filter(entity::wallet::Column::Chain.eq(chain))
+            .all(&self.db).await?;
+
+        Ok(wallets)
+    }
+
+    pub async fn find_by_user(&self, user_id: &str) -> Result<Vec<entity::wallet::Model>> {
+        let wallets = entity::wallet::Entity
+            ::find()
+            .filter(entity::wallet::Column::UserId.eq(user_id))
             .all(&self.db).await?;
 
         Ok(wallets)

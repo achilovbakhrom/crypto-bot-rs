@@ -1,7 +1,22 @@
 pub mod wallet_service;
 pub mod balance_service;
 pub mod transfer_service;
+pub mod transaction_service;
+pub mod price_service;
+pub mod portfolio_service;
+pub mod address_book_service;
+pub mod gas_estimation_service;
+pub mod scheduling_service;
+pub mod price_alert_service;
+pub mod security_service;
+pub mod swap_service;
 
 pub use wallet_service::WalletService;
 pub use balance_service::BalanceService;
 pub use transfer_service::TransferService;
+pub use transaction_service::TransactionService;
+pub use price_service::PriceService;
+pub use portfolio_service::PortfolioService;
+pub use address_book_service::AddressBookService;
+pub use gas_estimation_service::GasEstimationService;
+pub use swap_service::SwapService;

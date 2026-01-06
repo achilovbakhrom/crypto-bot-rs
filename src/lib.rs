@@ -7,6 +7,10 @@ pub mod chains;
 pub mod rpc;
 pub mod services;
 pub mod api;
+pub mod bot;
+pub mod scheduler;
+pub mod alert_checker;
+pub mod dex;
 
 pub use config::Config;
 pub use error::{ AppError, Result };

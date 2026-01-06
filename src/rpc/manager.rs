@@ -1,7 +1,8 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::chains::{ evm::EvmProvider, solana::SolanaProvider };
+use crate::chains::evm::EvmProvider;
+use crate::chains::solana::SolanaProvider;
 use crate::config::{ Config, NetworkMode };
 use crate::error::{ AppError, Result };
 use crate::providers::ChainProvider;
@@ -58,7 +59,6 @@ impl RpcManager {
         for url in &config.solana_rpc_urls {
             solana_providers.push(Arc::new(SolanaProvider::new(url)));
         }
-
         if solana_providers.is_empty() {
             return Err(AppError::Config("No valid Solana RPC providers configured".to_string()));
         }

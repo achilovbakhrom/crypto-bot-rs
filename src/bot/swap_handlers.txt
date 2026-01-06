@@ -1,0 +1,35 @@
+
+// ==================== PHASE 9: SWAP HANDLERS ====================
+
+async fn handle_swap(
+    bot: Bot,
+    msg: Message,
+    args: String,
+    user_id: String,
+    state: Arc<BotState>
+) -> ResponseResult<()> {
+    let parts: Vec<&str> = args.split_whitespace().collect();
+    if parts.len() < 4 {
+        bot.send_message(msg.chat.id, "❌ Usage: /swap <wallet_id> <from_token> <to_token> <amount> [slippage]").await?;
+        return Ok(());
+    }
+
+    let wallet_id = Uuid::parse_str(parts[0]).map_err(|_| {
+        bot.send_message(msg.chat.id, "❌ Invalid wallet ID")
+    })?;
+    let amount: f64 = parts[3].parse().unwrap_or(0.0);
+    let slippage = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(1.0);
+
+    bot.send_message(msg.chat.id, "⚠️ Swap feature is under development").await?;
+    Ok(())
+}
+
+async fn handle_swap_quote(bot: Bot, msg: Message, args: String, state: Arc<BotState>) -> ResponseResult<()> {
+    bot.send_message(msg.chat.id, "⚠️ Swap quote feature is under development").await?;
+    Ok(())
+}
+
+async fn handle_swap_history(bot: Bot, msg: Message, args: String, user_id: String, state: Arc<BotState>) -> ResponseResult<()> {
+    bot.send_message(msg.chat.id, "⚠️ Swap history feature is under development").await?;
+    Ok(())
+}

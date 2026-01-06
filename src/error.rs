@@ -27,9 +27,17 @@ pub enum AppError {
     #[error("Invalid private key")]
     InvalidPrivateKey,
 
+    #[error("Not found: {0}")] NotFound(String),
+
     #[error("Configuration error: {0}")] Config(String),
 
     #[error("Internal error: {0}")] Internal(String),
+
+    #[error("External API error: {0}")] External(String),
+
+    #[error("Validation error: {0}")] Validation(String),
+
+    #[error("Blockchain error: {0}")] Blockchain(String),
 }
 
 #[derive(serde::Serialize)]
@@ -74,8 +82,12 @@ impl AppError {
                     "Invalid private key format".to_string(),
                     Some("private_key".to_string()),
                 ),
+            AppError::NotFound(msg) => ("NOT_FOUND", msg.clone(), None),
             AppError::Config(msg) => ("CONFIG_ERROR", msg.clone(), None),
             AppError::Internal(msg) => ("INTERNAL_ERROR", msg.clone(), None),
+            AppError::External(msg) => ("EXTERNAL_ERROR", msg.clone(), None),
+            AppError::Validation(msg) => ("VALIDATION_ERROR", msg.clone(), None),
+            AppError::Blockchain(msg) => ("BLOCKCHAIN_ERROR", msg.clone(), None),
         };
 
         ErrorResponse {
@@ -98,7 +110,10 @@ impl axum::response::IntoResponse for AppError {
             | AppError::InvalidPrivateKey => {
                 axum::http::StatusCode::BAD_REQUEST
             }
+            AppError::Validation(_) => axum::http::StatusCode::BAD_REQUEST,
+            AppError::Blockchain(_) => axum::http::StatusCode::BAD_REQUEST,
             AppError::InsufficientBalance => axum::http::StatusCode::BAD_REQUEST,
+            AppError::External(_) => axum::http::StatusCode::BAD_GATEWAY,
             _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
         };
 

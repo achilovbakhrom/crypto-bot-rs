@@ -4,7 +4,6 @@ use uuid::Uuid;
 use crate::crypto::Encryptor;
 use crate::db::WalletRepository;
 use crate::error::Result;
-use crate::providers::WalletInfo;
 use crate::rpc::RpcManager;
 
 pub struct WalletService {
@@ -96,8 +95,7 @@ impl WalletService {
         if let Some(chain) = chain {
             self.repository.find_by_user_and_chain(user_id, chain).await
         } else {
-            // TODO: Implement find_by_user method
-            Ok(vec![])
+            self.repository.find_by_user(user_id).await
         }
     }
 }

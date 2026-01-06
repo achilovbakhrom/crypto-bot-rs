@@ -1,5 +1,6 @@
-use aes_gcm::{ aead::{ Aead, KeyInit, OsRng }, Aes256Gcm, Nonce };
-use rand::RngCore;
+use aes_gcm::{ aead::{ Aead, KeyInit }, Aes256Gcm, Nonce };
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 
 use crate::error::{ AppError, Result };
 
@@ -22,7 +23,8 @@ impl Encryptor {
 
     pub fn encrypt(&self, plaintext: &str) -> Result<String> {
         let mut nonce_bytes = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce_bytes);
+        OsRng.try_fill_bytes(&mut nonce_bytes)
+            .map_err(|e| AppError::Encryption(format!("RNG error: {}", e)))?;
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let ciphertext = self.cipher

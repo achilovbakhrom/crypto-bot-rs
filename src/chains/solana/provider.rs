@@ -1,14 +1,14 @@
+use std::sync::Arc;
 use async_trait::async_trait;
 use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_commitment_config::CommitmentConfig;
 use solana_sdk::{
-    commitment_config::CommitmentConfig,
     native_token::LAMPORTS_PER_SOL,
     pubkey::Pubkey,
     signature::{ Keypair, Signer },
-    system_instruction,
     transaction::Transaction,
-    hash::Hash,
 };
+use solana_system_interface::instruction as system_instruction;
 use spl_token::state::Account as TokenAccount;
 use std::str::FromStr;
 
@@ -22,18 +22,20 @@ use crate::providers::{
     WalletInfo,
 };
 
+#[derive(Clone)]
 pub struct SolanaProvider {
-    client: RpcClient,
+    client: Arc<RpcClient>,
 }
 
 impl SolanaProvider {
     pub fn new(rpc_url: &str) -> Self {
+        tracing::info!("Initializing Solana provider with RPC URL: {}", rpc_url);
         let client = RpcClient::new_with_commitment(
             rpc_url.to_string(),
             CommitmentConfig::confirmed()
         );
 
-        Self { client }
+        Self { client: Arc::new(client) }
     }
 
     async fn get_spl_token_balance(
@@ -62,7 +64,10 @@ impl SolanaProvider {
             AppError::Rpc(format!("Failed to get token account: {}", e))
         })?;
 
-        let token_account_info = TokenAccount::unpack(&account_data).map_err(|e|
+        // Deserialize token account data
+        use spl_token::state::Account;
+        use solana_sdk::program_pack::Pack;
+        let token_account_info = Account::unpack_from_slice(&account_data).map_err(|e|
             AppError::Chain(format!("Failed to parse token account: {}", e))
         )?;
 
@@ -166,11 +171,15 @@ impl ChainProvider for SolanaProvider {
     async fn get_balance(&self, address: &str) -> Result<Balance> {
         let pubkey = Pubkey::from_str(address).map_err(|_| AppError::InvalidAddress)?;
 
+        tracing::debug!("Fetching SOL balance for address: {}", address);
+
         let balance: u64 = self.client
             .get_balance(&pubkey).await
             .map_err(|e| AppError::Rpc(format!("Failed to get balance: {}", e)))?;
 
         let balance_sol = (balance as f64) / (LAMPORTS_PER_SOL as f64);
+
+        tracing::debug!("SOL balance: {} lamports = {} SOL", balance, balance_sol);
 
         Ok(Balance {
             balance: balance_sol.to_string(),
@@ -193,7 +202,9 @@ impl ChainProvider for SolanaProvider {
             .into_vec()
             .map_err(|_| AppError::InvalidPrivateKey)?;
 
-        let keypair = Keypair::from_bytes(&keypair_bytes).map_err(|_| AppError::InvalidPrivateKey)?;
+        let keypair = Keypair::try_from(&keypair_bytes[..]).map_err(
+            |_| AppError::InvalidPrivateKey
+        )?;
 
         let to = Pubkey::from_str(&request.to).map_err(|_| AppError::InvalidAddress)?;
 
@@ -221,7 +232,11 @@ impl ChainProvider for SolanaProvider {
                 .map_err(|_| AppError::InvalidInput("Invalid amount".to_string()))?;
             let lamports = (amount_sol * (LAMPORTS_PER_SOL as f64)) as u64;
 
-            let instruction = system_instruction::transfer(&keypair.pubkey(), &to, lamports);
+            let instruction = system_instruction::transfer(
+                &keypair.pubkey(),
+                &to,
+                lamports
+            );
 
             let recent_blockhash = self.client
                 .get_latest_blockhash().await
@@ -243,6 +258,42 @@ impl ChainProvider for SolanaProvider {
                 status: "confirmed".to_string(),
             })
         }
+    }
+
+    async fn estimate_gas(
+        &self,
+        from: &str,
+        to: &str,
+        amount: &str,
+        token_address: Option<&str>
+    ) -> Result<crate::providers::GasEstimate> {
+        let _from_pubkey = Pubkey::from_str(from).map_err(|_| AppError::InvalidAddress)?;
+        let _to_pubkey = Pubkey::from_str(to).map_err(|_| AppError::InvalidAddress)?;
+
+        // Solana uses a fixed fee model
+        // Base fee is 5000 lamports per signature
+        // Priority fees can be added but are optional
+        const BASE_FEE_LAMPORTS: u64 = 5000;
+        const COMPUTE_UNITS_DEFAULT: u64 = 200_000;
+
+        // For SPL token transfers, we need 2 signatures (payer + token account)
+        let estimated_fee_lamports = if token_address.is_some() {
+            BASE_FEE_LAMPORTS * 2 // Token transfer may need multiple signatures
+        } else {
+            BASE_FEE_LAMPORTS
+        };
+
+        // Convert lamports to SOL
+        let fee_sol = (estimated_fee_lamports as f64) / (LAMPORTS_PER_SOL as f64);
+
+        Ok(crate::providers::GasEstimate {
+            estimated_gas: COMPUTE_UNITS_DEFAULT,
+            gas_price: Some(format!("{} lamports", estimated_fee_lamports)),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            total_cost_native: format!("{:.9}", fee_sol),
+            total_cost_usd: None,
+        })
     }
 
     fn validate_address(&self, address: &str) -> bool {

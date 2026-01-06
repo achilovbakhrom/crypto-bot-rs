@@ -1,2 +1,2 @@
 pub mod evm;
-pub mod solana;
+pub mod solana; // Temporarily disabled due to dependency conflicts

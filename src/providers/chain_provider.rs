@@ -36,6 +36,16 @@ pub struct TransactionResponse {
     pub status: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GasEstimate {
+    pub estimated_gas: u64,
+    pub gas_price: Option<String>,
+    pub max_fee_per_gas: Option<String>,
+    pub max_priority_fee_per_gas: Option<String>,
+    pub total_cost_native: String,
+    pub total_cost_usd: Option<f64>,
+}
+
 #[async_trait]
 pub trait ChainProvider: Send + Sync {
     /// Generate a new wallet with 24-word mnemonic
@@ -56,6 +66,15 @@ pub trait ChainProvider: Send + Sync {
         private_key: &str,
         request: TransactionRequest
     ) -> Result<TransactionResponse>;
+
+    /// Estimate gas for a transaction
+    async fn estimate_gas(
+        &self,
+        from: &str,
+        to: &str,
+        amount: &str,
+        token_address: Option<&str>
+    ) -> Result<GasEstimate>;
 
     /// Validate address format
     fn validate_address(&self, address: &str) -> bool;
