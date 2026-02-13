@@ -1,6 +1,7 @@
 use crate::db::entity::price_alert;
+use crate::enums::{ AlertKind, AlertType };
 use crate::error::Result;
-use chrono::{ DateTime, Utc };
+use chrono::Utc;
 use sea_orm::{
     ActiveModelTrait,
     ActiveValue,
@@ -26,20 +27,6 @@ pub struct CreateAlertRequest {
     pub alert_type: AlertType,
 }
 
-#[derive(Debug, Clone)]
-pub enum AlertType {
-    Above {
-        target_price: f64,
-    },
-    Below {
-        target_price: f64,
-    },
-    PercentChange {
-        percent: f64,
-        base_price: f64,
-    },
-}
-
 impl PriceAlertService {
     pub fn new(db: DatabaseConnection) -> Self {
         Self { db }
@@ -49,10 +36,10 @@ impl PriceAlertService {
     pub async fn create_alert(&self, req: CreateAlertRequest) -> Result<price_alert::Model> {
         let now = Utc::now();
 
-        let (alert_type_str, target_price, percent_change, base_price) = match req.alert_type {
+        let (alert_kind, target_price, percent_change, base_price) = match req.alert_type {
             AlertType::Above { target_price } => {
                 (
-                    "above".to_string(),
+                    AlertKind::Above,
                     Some(Decimal::from_f64_retain(target_price).unwrap()),
                     None,
                     None,
@@ -60,7 +47,7 @@ impl PriceAlertService {
             }
             AlertType::Below { target_price } => {
                 (
-                    "below".to_string(),
+                    AlertKind::Below,
                     Some(Decimal::from_f64_retain(target_price).unwrap()),
                     None,
                     None,
@@ -68,7 +55,7 @@ impl PriceAlertService {
             }
             AlertType::PercentChange { percent, base_price } => {
                 (
-                    "percent_change".to_string(),
+                    AlertKind::PercentChange,
                     None,
                     Some(Decimal::from_f64_retain(percent).unwrap()),
                     Some(Decimal::from_f64_retain(base_price).unwrap()),
@@ -82,7 +69,7 @@ impl PriceAlertService {
             token_symbol: ActiveValue::Set(req.token_symbol),
             chain: ActiveValue::Set(req.chain),
             token_address: ActiveValue::Set(req.token_address),
-            alert_type: ActiveValue::Set(alert_type_str),
+            alert_type: ActiveValue::Set(alert_kind.to_string()),
             target_price: ActiveValue::Set(target_price),
             percent_change: ActiveValue::Set(percent_change),
             base_price: ActiveValue::Set(base_price),

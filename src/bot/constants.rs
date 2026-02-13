@@ -1,7 +1,7 @@
 // Command descriptions
 pub mod command_descriptions {
     pub const START: &str = "Start the bot and see welcome message";
-    pub const CREATE_WALLET: &str = "Create a new wallet - Usage: /createwallet <ETH|BSC|SOLANA>";
+    pub const CREATE_WALLET: &str = "Create a new wallet - Usage: /createwallet <chain>";
     pub const IMPORT_WALLET: &str =
         "Import existing wallet - Usage: /importwallet <chain> <mnemonic or private key>";
     pub const WALLETS: &str = "List all your wallets";
@@ -17,7 +17,7 @@ pub mod command_descriptions {
     pub const PORTFOLIO: &str = "Show your complete portfolio with USD values";
     pub const PRICES: &str = "Get current cryptocurrency prices";
     pub const SAVE_ADDRESS: &str =
-        "Save address to address book - Usage: /saveaddress <name> <address> <ETH|BSC|SOLANA> [notes]";
+        "Save address to address book - Usage: /saveaddress <name> <address> <chain> [notes]";
     pub const ADDRESSES: &str = "List all saved addresses";
     pub const DELETE_ADDRESS: &str = "Delete saved address - Usage: /deleteaddress <name>";
     pub const SCHEDULE: &str =
@@ -52,10 +52,7 @@ pub mod messages {
         r#"
 🔐 *Welcome to Crypto Wallet Bot\!*
 
-I'm a multi\-chain wallet manager supporting:
-• Ethereum \(ETH\)
-• Binance Smart Chain \(BSC\)
-• Solana \(SOL\)
+I'm a multi\-chain wallet manager supporting 14\+ blockchains including Bitcoin, Ethereum, BSC, Polygon, Avalanche, Arbitrum, Optimism, Base, Fantom, Cronos, Gnosis, Solana, XRP, and Cardano\.
 
 *Quick Start:*
 1\. Create a wallet: `/createwallet ETH`
@@ -94,12 +91,12 @@ Use /help to see all available commands\.
         `/addresses` \\- List saved addresses\n\n\
         `/deleteaddress <name>` \\- Delete saved address\n\
           Example: `/deleteaddress alice`\n\n\
-        *Supported Chains:* ETH, BSC, SOLANA";
+        *Supported Chains:* BTC, ETH, BSC, SOLANA, POLYGON, AVAX, ARBITRUM, OPTIMISM, BASE, FANTOM, CRONOS, GNOSIS, XRP, ADA";
 
     // Error messages
     pub const ERR_CHAIN_REQUIRED: &str =
-        "❌ Please specify a chain: /createwallet <ETH|BSC|SOLANA>";
-    pub const ERR_INVALID_CHAIN: &str = "❌ Invalid chain. Supported: ETH, BSC, SOLANA";
+        "❌ Please specify a chain: /createwallet <chain>\nSupported: BTC, ETH, BSC, SOLANA, POLYGON, AVAX, ARBITRUM, OPTIMISM, BASE, FANTOM, CRONOS, GNOSIS, XRP, ADA";
+    pub const ERR_INVALID_CHAIN: &str = "❌ Invalid chain. Supported: BTC, ETH, BSC, SOLANA, POLYGON, AVAX, ARBITRUM, OPTIMISM, BASE, FANTOM, CRONOS, GNOSIS, XRP, ADA";
     pub const ERR_INVALID_WALLET_ID: &str = "❌ Invalid wallet ID format";
     pub const ERR_IMPORT_USAGE: &str =
         "❌ Usage: /importwallet <chain> <mnemonic or private key>\nExample: /importwallet ETH word1 word2 word3...";
@@ -232,26 +229,14 @@ Use /help to see all available commands\.
     pub const HEADER_BATCH_RESULTS: &str = "*Batch Send Results:*\n\n";
 }
 
-// Chain names
-pub mod chains {
-    pub const ETH: &str = "ETH";
-    pub const ETHEREUM: &str = "ETHEREUM";
-    pub const BSC: &str = "BSC";
-    pub const BNB: &str = "BNB";
-    pub const SOLANA: &str = "SOLANA";
-    pub const SOL: &str = "SOL";
+// Re-export Chain enum for convenience
+pub use crate::enums::Chain;
 
-    pub fn normalize_chain(chain: &str) -> &str {
-        match chain {
-            "ETHEREUM" => "ETH",
-            "BNB" => "BSC",
-            "SOL" => "SOLANA",
-            _ => chain,
-        }
-    }
+pub mod chains {
+    use crate::enums::Chain;
 
     pub fn is_valid_chain(chain: &str) -> bool {
-        matches!(chain, "ETH" | "ETHEREUM" | "BSC" | "BNB" | "SOLANA" | "SOL")
+        chain.parse::<Chain>().is_ok()
     }
 }
 

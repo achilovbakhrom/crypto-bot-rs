@@ -178,7 +178,7 @@ impl DexProvider for JupiterProvider {
     }
 
     fn supported_chains(&self) -> Vec<&str> {
-        vec!["SOLANA"]
+        vec![crate::enums::Chain::Solana.as_str()]
     }
 }
 

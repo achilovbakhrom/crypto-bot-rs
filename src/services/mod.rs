@@ -10,6 +10,7 @@ pub mod scheduling_service;
 pub mod price_alert_service;
 pub mod security_service;
 pub mod swap_service;
+pub mod token_discovery_service;
 
 pub use wallet_service::WalletService;
 pub use balance_service::BalanceService;
@@ -20,3 +21,4 @@ pub use portfolio_service::PortfolioService;
 pub use address_book_service::AddressBookService;
 pub use gas_estimation_service::GasEstimationService;
 pub use swap_service::SwapService;
+pub use token_discovery_service::TokenDiscoveryService;

@@ -46,6 +46,16 @@ pub struct GasEstimate {
     pub total_cost_usd: Option<f64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenBalanceEntry {
+    pub contract_address: String,
+    pub symbol: String,
+    pub name: String,
+    pub decimals: u8,
+    pub balance: String,
+    pub logo_url: Option<String>,
+}
+
 #[async_trait]
 pub trait ChainProvider: Send + Sync {
     /// Generate a new wallet with 24-word mnemonic

@@ -1,4 +1,5 @@
 use crate::db::entity::scheduled_transaction;
+use crate::enums::{ ScheduleStatus, RecurringType };
 use crate::error::Result;
 use chrono::{ DateTime, Duration, Utc };
 use sea_orm::{
@@ -24,7 +25,7 @@ pub struct ScheduleRequest {
     pub amount: String,
     pub token_address: Option<String>,
     pub scheduled_for: DateTime<Utc>,
-    pub recurring_type: Option<String>, // "daily", "weekly", "monthly"
+    pub recurring_type: Option<RecurringType>,
 }
 
 impl SchedulingService {
@@ -47,8 +48,8 @@ impl SchedulingService {
             amount: ActiveValue::Set(req.amount),
             token_address: ActiveValue::Set(req.token_address),
             scheduled_for: ActiveValue::Set(req.scheduled_for),
-            recurring_type: ActiveValue::Set(req.recurring_type),
-            status: ActiveValue::Set("pending".to_string()),
+            recurring_type: ActiveValue::Set(req.recurring_type.map(|r| r.to_string())),
+            status: ActiveValue::Set(ScheduleStatus::Pending.to_string()),
             executed_at: ActiveValue::Set(None),
             tx_hash: ActiveValue::Set(None),
             error_message: ActiveValue::Set(None),
@@ -92,9 +93,9 @@ impl SchedulingService {
             .one(&self.db).await?;
 
         if let Some(schedule) = schedule {
-            if schedule.status == "pending" {
+            if schedule.status == ScheduleStatus::Pending.as_str() {
                 let mut active: scheduled_transaction::ActiveModel = schedule.into();
-                active.status = ActiveValue::Set("cancelled".to_string());
+                active.status = ActiveValue::Set(ScheduleStatus::Cancelled.to_string());
                 active.updated_at = ActiveValue::Set(Utc::now());
                 active.update(&self.db).await?;
             }
@@ -109,7 +110,7 @@ impl SchedulingService {
 
         let schedules = scheduled_transaction::Entity
             ::find()
-            .filter(scheduled_transaction::Column::Status.eq("pending"))
+            .filter(scheduled_transaction::Column::Status.eq(ScheduleStatus::Pending.as_str()))
             .filter(scheduled_transaction::Column::ScheduledFor.lte(now))
             .all(&self.db).await?;
 
@@ -122,7 +123,7 @@ impl SchedulingService {
 
         if let Some(schedule) = schedule {
             let mut active: scheduled_transaction::ActiveModel = schedule.clone().into();
-            active.status = ActiveValue::Set("executed".to_string());
+            active.status = ActiveValue::Set(ScheduleStatus::Executed.to_string());
             active.executed_at = ActiveValue::Set(Some(Utc::now()));
             active.tx_hash = ActiveValue::Set(Some(tx_hash));
             active.updated_at = ActiveValue::Set(Utc::now());
@@ -143,7 +144,7 @@ impl SchedulingService {
 
         if let Some(schedule) = schedule {
             let mut active: scheduled_transaction::ActiveModel = schedule.into();
-            active.status = ActiveValue::Set("failed".to_string());
+            active.status = ActiveValue::Set(ScheduleStatus::Failed.to_string());
             active.executed_at = ActiveValue::Set(Some(Utc::now()));
             active.error_message = ActiveValue::Set(Some(error));
             active.updated_at = ActiveValue::Set(Utc::now());
@@ -159,13 +160,15 @@ impl SchedulingService {
         schedule: &scheduled_transaction::Model,
         recurring_type: &str
     ) -> Result<()> {
-        let next_time = match recurring_type {
-            "daily" => schedule.scheduled_for + Duration::days(1),
-            "weekly" => schedule.scheduled_for + Duration::weeks(1),
-            "monthly" => schedule.scheduled_for + Duration::days(30), // Approximate
-            _ => {
-                return Ok(());
-            }
+        let parsed = match recurring_type.parse::<RecurringType>() {
+            Ok(r) => r,
+            Err(_) => return Ok(()),
+        };
+
+        let next_time = match parsed {
+            RecurringType::Daily => schedule.scheduled_for + Duration::days(1),
+            RecurringType::Weekly => schedule.scheduled_for + Duration::weeks(1),
+            RecurringType::Monthly => schedule.scheduled_for + Duration::days(30),
         };
 
         let next_schedule = scheduled_transaction::ActiveModel {
@@ -176,8 +179,8 @@ impl SchedulingService {
             amount: ActiveValue::Set(schedule.amount.clone()),
             token_address: ActiveValue::Set(schedule.token_address.clone()),
             scheduled_for: ActiveValue::Set(next_time),
-            recurring_type: ActiveValue::Set(Some(recurring_type.to_string())),
-            status: ActiveValue::Set("pending".to_string()),
+            recurring_type: ActiveValue::Set(Some(parsed.to_string())),
+            status: ActiveValue::Set(ScheduleStatus::Pending.to_string()),
             executed_at: ActiveValue::Set(None),
             tx_hash: ActiveValue::Set(None),
             error_message: ActiveValue::Set(None),

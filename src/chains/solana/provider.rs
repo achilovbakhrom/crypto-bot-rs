@@ -13,6 +13,7 @@ use spl_token::state::Account as TokenAccount;
 use std::str::FromStr;
 
 use crate::chains::solana::{ tokens, wallet };
+use crate::enums::TxStatus;
 use crate::error::{ AppError, Result };
 use crate::providers::{
     Balance,
@@ -153,7 +154,7 @@ impl SolanaProvider {
 
         Ok(TransactionResponse {
             tx_hash: signature.to_string(),
-            status: "confirmed".to_string(),
+            status: TxStatus::Confirmed.to_string(),
         })
     }
 }
@@ -255,7 +256,7 @@ impl ChainProvider for SolanaProvider {
 
             Ok(TransactionResponse {
                 tx_hash: signature.to_string(),
-                status: "confirmed".to_string(),
+                status: TxStatus::Confirmed.to_string(),
             })
         }
     }

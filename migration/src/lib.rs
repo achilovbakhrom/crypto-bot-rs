@@ -7,6 +7,7 @@ mod m20240104_000001_create_scheduled_transactions_table;
 mod m20240105_000001_create_price_alerts_table;
 mod m20240105_000002_create_security_settings_table;
 mod m20240106_000001_create_swaps_table;
+mod m20240107_000001_create_token_metadata_table;
 
 pub struct Migrator;
 
@@ -20,7 +21,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20240104_000001_create_scheduled_transactions_table::Migration),
             Box::new(m20240105_000001_create_price_alerts_table::Migration),
             Box::new(m20240105_000002_create_security_settings_table::Migration),
-            Box::new(m20240106_000001_create_swaps_table::Migration)
+            Box::new(m20240106_000001_create_swaps_table::Migration),
+            Box::new(m20240107_000001_create_token_metadata_table::Migration),
         ]
     }
 }

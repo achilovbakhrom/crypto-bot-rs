@@ -2,6 +2,7 @@ use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::MessageId;
 
+use crate::enums::{ Chain, AlertKind };
 use super::{BotState, DialogueState};
 use super::keyboards;
 
@@ -117,6 +118,29 @@ pub async fn handle_text_message(
             // Show swap confirmation
             show_swap_confirmation(&bot, chat_id, &wallet_id, &from_token, &to_token, &amount, &state).await?;
         }
+        DialogueState::WaitingForAlertValue { token_symbol, chain, alert_kind } => {
+            let value_str = text.trim();
+            let value: f64 = match value_str.parse() {
+                Ok(v) if v > 0.0 => v,
+                _ => {
+                    bot.send_message(chat_id, "❌ Please enter a valid positive number.")
+                        .await?;
+                    return Ok(());
+                }
+            };
+
+            // Clear dialogue state
+            {
+                let mut storage = state.dialogue_storage.write().await;
+                storage.remove(&user_id);
+            }
+
+            // Show confirmation
+            show_alert_confirmation(&bot, chat_id, &token_symbol, &chain, &alert_kind, value, user_id, &state).await?;
+        }
+        DialogueState::PendingAlertConfirmation { .. } => {
+            // Waiting for button confirmation - ignore text
+        }
         DialogueState::PendingSendConfirmation { .. } => {
             // User already entered address, waiting for button confirmation - ignore text
         }
@@ -217,6 +241,16 @@ pub async fn handle_callback(
         ["wallet", "receive", wallet_id] => {
             show_receive_address(&bot, chat_id, message_id, wallet_id, &state).await?;
         }
+        ["wallet", "tokens", wallet_id] => {
+            show_wallet_tokens(&bot, chat_id, message_id, wallet_id, 0, &state).await?;
+        }
+        ["wallet", "tokens", wallet_id, page] => {
+            let page: usize = page.parse().unwrap_or(0);
+            show_wallet_tokens(&bot, chat_id, message_id, wallet_id, page, &state).await?;
+        }
+        ["wallet", "explorer", wallet_id] => {
+            show_wallet_explorer_link(&bot, chat_id, message_id, wallet_id, &state).await?;
+        }
 
         // Send flow
         ["send", "native", wallet_id] => {
@@ -315,7 +349,27 @@ pub async fn handle_callback(
             show_alerts(&bot, chat_id, message_id, &user_id_str, &state).await?;
         }
         ["alert", "new"] => {
-            show_new_alert_instructions(&bot, chat_id, message_id).await?;
+            show_alert_token_selection(&bot, chat_id, message_id).await?;
+        }
+        ["alert", "token", symbol] => {
+            show_alert_chain_or_type(&bot, chat_id, message_id, symbol).await?;
+        }
+        ["alert", "chain", symbol, chain] => {
+            show_alert_type_selection_screen(&bot, chat_id, message_id, symbol, chain, &state).await?;
+        }
+        ["alert", "type", symbol, chain, alert_kind] => {
+            show_alert_value_prompt(&bot, chat_id, message_id, symbol, chain, alert_kind, user_id, &state).await?;
+        }
+        ["alert", "confirm"] => {
+            confirm_create_alert(&bot, chat_id, message_id, user_id, &state).await?;
+        }
+        ["alert", "cancel"] => {
+            // Clear dialogue state and go back to alerts menu
+            {
+                let mut storage = state.dialogue_storage.write().await;
+                storage.remove(&user_id);
+            }
+            show_alerts_menu(&bot, chat_id, message_id).await?;
         }
 
         // Refresh actions
@@ -325,6 +379,9 @@ pub async fn handle_callback(
         ["refresh", "prices"] => {
             show_prices(&bot, chat_id, message_id, &state).await?;
         }
+
+        // No-op for non-interactive buttons (e.g. page indicators)
+        ["noop"] => {}
 
         // Cancel action
         ["cancel"] => {
@@ -376,16 +433,18 @@ async fn show_wallets(
         }
         Ok(wallets) => {
             let mut buttons: Vec<Vec<teloxide::types::InlineKeyboardButton>> = wallets.iter().map(|w| {
-                let chain_emoji = match w.chain.as_str() {
-                    "ETH" => "🔷",
-                    "BSC" => "🟡",
-                    "SOLANA" => "🟣",
-                    _ => "📍",
+                let chain_emoji = chain_emoji(&w.chain);
+                let short_addr = if w.address.len() >= 10 {
+                    format!("{}...{}", &w.address[..6], &w.address[w.address.len()-4..])
+                } else {
+                    w.address.clone()
                 };
-                let short_addr = format!("{}...{}", &w.address[..6], &w.address[w.address.len()-4..]);
+                let chain_display = w.chain.parse::<Chain>()
+                    .map(|c| c.display_name().to_string())
+                    .unwrap_or_else(|_| w.chain.clone());
                 vec![
                     teloxide::types::InlineKeyboardButton::callback(
-                        format!("{} {} {}", chain_emoji, w.chain, short_addr),
+                        format!("{} {} {}", chain_emoji, chain_display, short_addr),
                         format!("wallet:select:{}", w.id)
                     )
                 ]
@@ -438,12 +497,7 @@ async fn show_wallet_actions(
 
     match state.wallet_service.get_wallet(uuid).await {
         Ok(wallet) => {
-            let chain_emoji = match wallet.chain.as_str() {
-                "ETH" => "🔷",
-                "BSC" => "🟡",
-                "SOLANA" => "🟣",
-                _ => "📍",
-            };
+            let chain_emoji = chain_emoji(&wallet.chain);
 
             let text = format!(
                 "{} {} Wallet\n\n\
@@ -543,27 +597,53 @@ async fn show_wallet_balance(
     bot.edit_message_text(chat_id, message_id, "⏳ Fetching balance...")
         .await?;
 
-    match state.balance_service.get_balance(uuid, None).await {
-        Ok(balance) => {
-            let text = format!(
-                "💰 Balance\n\n\
-                💵 Symbol: {}\n\
-                💎 Amount: {}",
-                balance.symbol,
-                balance.balance
+    match state.balance_service.get_all_balances(uuid).await {
+        Ok(balances) => {
+            let emoji = chain_emoji(&balances.chain);
+            let chain_name = balances.chain.parse::<Chain>()
+                .map(|c| c.display_name())
+                .unwrap_or("Unknown");
+
+            let mut text = format!(
+                "{} {} Wallet Balance\n\n\
+                💎 {} {}\n",
+                emoji,
+                chain_name,
+                balances.native.balance,
+                balances.native.symbol
             );
 
-            let keyboard = teloxide::types::InlineKeyboardMarkup::new(vec![
+            if !balances.tokens.is_empty() {
+                text.push_str(&format!("\n🪙 Tokens ({}):\n", balances.tokens.len()));
+                for token in balances.tokens.iter().take(10) {
+                    text.push_str(&format!("  • {} {}\n", token.balance, token.symbol));
+                }
+                if balances.tokens.len() > 10 {
+                    text.push_str(&format!("  ... and {} more\n", balances.tokens.len() - 10));
+                }
+            }
+
+            // Explorer link
+            let addr_short = if balances.address.len() > 12 {
+                format!("{}...{}", &balances.address[..6], &balances.address[balances.address.len()-4..])
+            } else {
+                balances.address.clone()
+            };
+            let explorer_url = state.config.get_address_explorer_url(&balances.chain, &balances.address);
+            text.push_str(&format!("\n📬 {}\n🔍 {}", addr_short, explorer_url));
+
+            let mut buttons = vec![
                 vec![
                     teloxide::types::InlineKeyboardButton::callback("🔄 Refresh", format!("wallet:balance:{}", wallet_id)),
+                    teloxide::types::InlineKeyboardButton::callback("🪙 All Tokens", format!("wallet:tokens:{}", wallet_id)),
                 ],
-                vec![
-                    teloxide::types::InlineKeyboardButton::callback("« Back to Wallet", format!("wallet:select:{}", wallet_id)),
-                ],
+            ];
+            buttons.push(vec![
+                teloxide::types::InlineKeyboardButton::callback("« Back to Wallet", format!("wallet:select:{}", wallet_id)),
             ]);
 
             bot.edit_message_text(chat_id, message_id, text)
-                .reply_markup(keyboard)
+                .reply_markup(teloxide::types::InlineKeyboardMarkup::new(buttons))
                 .await?;
         }
         Err(e) => {
@@ -665,12 +745,7 @@ async fn show_wallet_qr(
 
     match state.wallet_service.get_wallet(uuid).await {
         Ok(wallet) => {
-            let chain_emoji = match wallet.chain.as_str() {
-                "ETH" => "🔷",
-                "BSC" => "🟡",
-                "SOLANA" => "🟣",
-                _ => "📍",
-            };
+            let chain_emoji = chain_emoji(&wallet.chain);
 
             // Generate QR code
             let qr = qrcode::QrCode::new(&wallet.address)?;
@@ -712,6 +787,155 @@ Scan QR or tap address to copy\\.",
     Ok(())
 }
 
+async fn show_wallet_tokens(
+    bot: &Bot,
+    chat_id: ChatId,
+    message_id: MessageId,
+    wallet_id: &str,
+    page: usize,
+    state: &Arc<BotState>,
+) -> HandlerResult {
+    let uuid = match uuid::Uuid::parse_str(wallet_id) {
+        Ok(id) => id,
+        Err(_) => {
+            bot.edit_message_text(chat_id, message_id, "❌ Invalid wallet ID")
+                .reply_markup(keyboards::back_to_menu())
+                .await?;
+            return Ok(());
+        }
+    };
+
+    bot.edit_message_text(chat_id, message_id, "⏳ Discovering tokens...")
+        .await?;
+
+    match state.balance_service.get_all_balances(uuid).await {
+        Ok(balances) => {
+            let emoji = chain_emoji(&balances.chain);
+            let chain_name = balances.chain.parse::<Chain>()
+                .map(|c| c.display_name())
+                .unwrap_or("Unknown");
+
+            if balances.tokens.is_empty() {
+                let text = format!(
+                    "{} {} Tokens\n\n\
+                    No ERC-20/SPL tokens found in this wallet.\n\n\
+                    💎 Native: {} {}",
+                    emoji, chain_name,
+                    balances.native.balance, balances.native.symbol
+                );
+
+                bot.edit_message_text(chat_id, message_id, text)
+                    .reply_markup(teloxide::types::InlineKeyboardMarkup::new(vec![
+                        vec![
+                            teloxide::types::InlineKeyboardButton::callback("🔄 Refresh", format!("wallet:tokens:{}", wallet_id)),
+                            teloxide::types::InlineKeyboardButton::callback("« Back", format!("wallet:select:{}", wallet_id)),
+                        ],
+                    ]))
+                    .await?;
+                return Ok(());
+            }
+
+            let tokens_per_page = 8;
+            let total_pages = (balances.tokens.len() + tokens_per_page - 1) / tokens_per_page;
+            let page = page.min(total_pages.saturating_sub(1));
+            let start = page * tokens_per_page;
+            let page_tokens = &balances.tokens[start..(start + tokens_per_page).min(balances.tokens.len())];
+
+            let mut text = format!(
+                "{} {} Tokens ({})\n\n",
+                emoji, chain_name, balances.tokens.len()
+            );
+
+            for token in page_tokens {
+                text.push_str(&format!("🪙 {} — {}\n", token.symbol, token.balance));
+                if let Some(ref name) = token.logo_url {
+                    // Just show name, not the URL
+                    let _ = name;
+                }
+            }
+
+            text.push_str(&format!("\n💎 Native: {} {}", balances.native.balance, balances.native.symbol));
+
+            bot.edit_message_text(chat_id, message_id, text)
+                .reply_markup(keyboards::token_list(wallet_id, page, total_pages))
+                .await?;
+        }
+        Err(e) => {
+            tracing::error!("Failed to get tokens: {:?}", e);
+            bot.edit_message_text(chat_id, message_id, format!("❌ Failed to discover tokens: {}", e))
+                .reply_markup(keyboards::back_to_menu())
+                .await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn show_wallet_explorer_link(
+    bot: &Bot,
+    chat_id: ChatId,
+    message_id: MessageId,
+    wallet_id: &str,
+    state: &Arc<BotState>,
+) -> HandlerResult {
+    let uuid = match uuid::Uuid::parse_str(wallet_id) {
+        Ok(id) => id,
+        Err(_) => {
+            bot.edit_message_text(chat_id, message_id, "❌ Invalid wallet ID")
+                .reply_markup(keyboards::back_to_menu())
+                .await?;
+            return Ok(());
+        }
+    };
+
+    match state.wallet_service.get_wallet(uuid).await {
+        Ok(wallet) => {
+            let emoji = chain_emoji(&wallet.chain);
+            let explorer_url = state.config.get_address_explorer_url(&wallet.chain, &wallet.address);
+            let chain_name = wallet.chain.parse::<Chain>()
+                .map(|c| c.display_name())
+                .unwrap_or("Unknown");
+
+            let text = format!(
+                "🔍 {} {} Explorer\n\n\
+                📬 Address:\n{}\n\n\
+                🔗 View on Explorer:\n{}",
+                emoji, chain_name,
+                wallet.address,
+                explorer_url
+            );
+
+            let keyboard = if let Ok(parsed_url) = reqwest::Url::parse(&explorer_url) {
+                teloxide::types::InlineKeyboardMarkup::new(vec![
+                    vec![
+                        teloxide::types::InlineKeyboardButton::url("🌐 Open Explorer", parsed_url),
+                    ],
+                    vec![
+                        teloxide::types::InlineKeyboardButton::callback("« Back to Wallet", format!("wallet:select:{}", wallet_id)),
+                    ],
+                ])
+            } else {
+                teloxide::types::InlineKeyboardMarkup::new(vec![
+                    vec![
+                        teloxide::types::InlineKeyboardButton::callback("« Back to Wallet", format!("wallet:select:{}", wallet_id)),
+                    ],
+                ])
+            };
+
+            bot.edit_message_text(chat_id, message_id, text)
+                .reply_markup(keyboard)
+                .await?;
+        }
+        Err(e) => {
+            bot.edit_message_text(chat_id, message_id, format!("❌ Failed to load wallet: {}", e))
+                .reply_markup(keyboards::back_to_menu())
+                .await?;
+        }
+    }
+
+    Ok(())
+}
+
 async fn show_portfolio(
     bot: &Bot,
     chat_id: ChatId,
@@ -724,16 +948,40 @@ async fn show_portfolio(
 
     match state.portfolio_service.get_portfolio(user_id).await {
         Ok(portfolio) => {
-            let mut text = String::from("💼 Your Portfolio\n\n");
+            let mut text = format!(
+                "💼 Your Portfolio\n📊 {} wallets across {} chains\n\n",
+                portfolio.wallet_count,
+                portfolio.chains.len()
+            );
 
             for holding in &portfolio.holdings {
+                let change_str = holding.price_change_24h
+                    .map(|c| {
+                        let arrow = if c >= 0.0 { "📈" } else { "📉" };
+                        format!(" {} {:.1}%", arrow, c.abs())
+                    })
+                    .unwrap_or_default();
+
                 text.push_str(&format!(
-                    "{} {}: {:.6} (${:.2})\n",
+                    "{} {} {:.6} (${:.2}){}\n",
                     chain_emoji(&holding.symbol),
                     holding.symbol,
                     holding.total_balance,
-                    holding.usd_value
+                    holding.usd_value,
+                    change_str,
                 ));
+
+                // Show per-wallet breakdown if multiple wallets hold this token
+                if holding.wallets.len() > 1 {
+                    for wh in &holding.wallets {
+                        let short_addr = if wh.address.len() >= 10 {
+                            format!("{}...{}", &wh.address[..6], &wh.address[wh.address.len()-4..])
+                        } else {
+                            wh.address.clone()
+                        };
+                        text.push_str(&format!("   └ {} {}\n", short_addr, wh.balance));
+                    }
+                }
             }
 
             text.push_str(&format!("\n💰 Total Value: ${:.2}", portfolio.total_usd_value));
@@ -762,12 +1010,25 @@ async fn show_prices(
     bot.edit_message_text(chat_id, message_id, "⏳ Fetching current prices...")
         .await?;
 
-    let symbols = vec!["ETH".to_string(), "BNB".to_string(), "SOL".to_string()];
+    // Fetch prices for all configured chain native tokens
+    let symbols: Vec<String> = state.config.configured_chains()
+        .iter()
+        .map(|c| c.native_symbol().to_string())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
     match state.price_service.get_prices(&symbols).await {
         Ok(prices) => {
             let mut text = String::from("📊 Cryptocurrency Prices\n\n");
 
-            for (symbol, price) in &prices {
+            // Display in a deterministic order
+            let mut sorted_prices: Vec<_> = prices.iter().collect();
+            sorted_prices.sort_by(|a, b| {
+                b.1.usd_price.partial_cmp(&a.1.usd_price).unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            for (symbol, price) in &sorted_prices {
                 let change = price.price_change_24h.unwrap_or(0.0);
                 let change_emoji = if change >= 0.0 { "📈" } else { "📉" };
                 text.push_str(&format!(
@@ -779,6 +1040,8 @@ async fn show_prices(
                     change.abs()
                 ));
             }
+
+            text.push_str("\n_Updated just now_");
 
             bot.edit_message_text(chat_id, message_id, text)
                 .reply_markup(keyboards::refresh_button("prices"))
@@ -796,15 +1059,25 @@ async fn show_prices(
 }
 
 async fn show_import_instructions(bot: &Bot, chat_id: ChatId, message_id: MessageId) -> HandlerResult {
-    let text = "📥 Import Wallet\n\n\
+    let chain_list: String = Chain::all()
+        .iter()
+        .map(|c| c.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let text = format!(
+        "📥 Import Wallet\n\n\
 To import an existing wallet, use the command:\n\n\
 /importwallet <chain> <mnemonic or private key>\n\n\
 Examples:\n\
 /importwallet ETH word1 word2 word3...\n\
-/importwallet SOLANA 5J7K...\n\n\
-Supported chains: ETH, BSC, SOLANA";
+/importwallet SOLANA 5J7K...\n\
+/importwallet POLYGON word1 word2 word3...\n\n\
+Supported chains: {}",
+        chain_list
+    );
 
-    bot.edit_message_text(chat_id, message_id, text)
+    bot.edit_message_text(chat_id, message_id, &text)
         .reply_markup(keyboards::back_to_menu())
         .await?;
 
@@ -837,12 +1110,9 @@ async fn show_send_menu(
                 Err(_) => "Unknown".to_string(),
             };
 
-            let native_token = match wallet.chain.as_str() {
-                "ETH" => "ETH",
-                "BSC" => "BNB",
-                "SOLANA" => "SOL",
-                _ => "tokens",
-            };
+            let native_token = wallet.chain.parse::<Chain>()
+                .map(|c| c.native_symbol())
+                .unwrap_or("tokens");
 
             let text = format!(
                 "📤 Send Crypto\n\n\
@@ -1186,12 +1456,9 @@ async fn execute_send_with_params(
         }
     };
 
-    let symbol = match wallet.chain.as_str() {
-        "ETH" => "ETH",
-        "BSC" => "BNB",
-        "SOLANA" => "SOL",
-        _ => "tokens",
-    };
+    let symbol = wallet.chain.parse::<Chain>()
+        .map(|c| c.native_symbol())
+        .unwrap_or("tokens");
 
     // Create transfer request
     let transfer_request = TransferRequest {
@@ -1278,12 +1545,7 @@ async fn show_receive_address(
 
     match state.wallet_service.get_wallet(uuid).await {
         Ok(wallet) => {
-            let chain_emoji = match wallet.chain.as_str() {
-                "ETH" => "🔷",
-                "BSC" => "🟡",
-                "SOLANA" => "🟣",
-                _ => "📍",
-            };
+            let chain_emoji = chain_emoji(&wallet.chain);
 
             // Generate QR code
             let qr = qrcode::QrCode::new(&wallet.address)?;
@@ -1404,14 +1666,15 @@ async fn show_swap_preset(
         }
     };
 
-    let (from_token, to_token) = match (wallet.chain.as_str(), preset) {
-        ("ETH", "preset1") => ("ETH", "USDC"),
-        ("ETH", "preset2") => ("ETH", "USDT"),
-        ("BSC", "preset1") => ("BNB", "USDT"),
-        ("BSC", "preset2") => ("BNB", "BUSD"),
-        ("SOLANA", "preset1") => ("SOL", "USDC"),
-        ("SOLANA", "preset2") => ("SOL", "USDT"),
-        _ => ("NATIVE", "STABLE"),
+    let chain = wallet.chain.parse::<Chain>().ok();
+    let native = chain.map(|c| c.native_symbol()).unwrap_or("NATIVE");
+
+    let (from_token, to_token) = match (chain, preset) {
+        (Some(Chain::Bsc), "preset1") => (native, "USDT"),
+        (Some(Chain::Bsc), "preset2") => (native, "BUSD"),
+        (_, "preset1") => (native, "USDC"),
+        (_, "preset2") => (native, "USDT"),
+        _ => (native, "USDC"),
     };
 
     let balance_str = match state.balance_service.get_balance(uuid, None).await {
@@ -1670,13 +1933,22 @@ async fn show_help_menu(bot: &Bot, chat_id: ChatId, message_id: MessageId) -> Ha
 }
 
 async fn show_help_wallets(bot: &Bot, chat_id: ChatId, message_id: MessageId) -> HandlerResult {
-    let text = "💼 Wallet Commands\n\n\
+    let chain_list: String = Chain::all()
+        .iter()
+        .map(|c| format!("{} {}", c.emoji(), c.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let text = format!(
+        "💼 Wallet Commands\n\n\
 /createwallet <chain> - Create new wallet\n\
 /importwallet <chain> <key> - Import wallet\n\
 /wallets - List all wallets\n\
 /balance <wallet_id> - Check balance\n\
 /address <wallet_id> - Get address with QR\n\n\
-Supported chains: ETH, BSC, SOLANA";
+Supported chains:\n{}",
+        chain_list
+    );
 
     bot.edit_message_text(chat_id, message_id, text)
         .reply_markup(keyboards::help_menu())
@@ -1846,7 +2118,12 @@ async fn show_alerts(
             let mut text = String::from("🔔 Your Price Alerts\n\n");
 
             for alert in &alerts {
-                let condition = if alert.alert_type == "above" { "📈 Above" } else { "📉 Below" };
+                let condition = match alert.alert_type.parse::<AlertKind>() {
+                    Ok(AlertKind::Above) => "📈 Above",
+                    Ok(AlertKind::Below) => "📉 Below",
+                    Ok(AlertKind::PercentChange) => "⚡ Change",
+                    Err(_) => "🔔 Alert",
+                };
                 let price_str = alert.target_price
                     .map(|p| format!("${}", p))
                     .unwrap_or_else(|| "N/A".to_string());
@@ -1889,27 +2166,319 @@ Example:\n\
     Ok(())
 }
 
-async fn show_new_alert_instructions(bot: &Bot, chat_id: ChatId, message_id: MessageId) -> HandlerResult {
-    let text = "🔔 Create Price Alert\n\n\
-Use the command:\n\
-/setalert <symbol> <above|below> <price>\n\n\
-Examples:\n\
-/setalert BTC above 100000\n\
-/setalert ETH below 3000";
+// ==================== INTERACTIVE ALERT FLOW ====================
+
+fn chains_for_symbol(symbol: &str) -> Vec<Chain> {
+    let chains: Vec<Chain> = Chain::all()
+        .iter()
+        .filter(|c| c.native_symbol().eq_ignore_ascii_case(symbol))
+        .copied()
+        .collect();
+    if chains.is_empty() {
+        vec![Chain::Eth]
+    } else {
+        chains
+    }
+}
+
+async fn show_alert_token_selection(bot: &Bot, chat_id: ChatId, message_id: MessageId) -> HandlerResult {
+    let text = "🔔 Create Price Alert\n\nSelect a token to watch:";
 
     bot.edit_message_text(chat_id, message_id, text)
-        .reply_markup(keyboards::alerts_menu())
+        .reply_markup(keyboards::alert_token_selection())
         .await?;
 
     Ok(())
 }
 
-fn chain_emoji(chain: &str) -> &'static str {
-    match chain.to_uppercase().as_str() {
-        "ETH" | "ETHEREUM" => "🔷",
-        "BSC" | "BNB" => "🟡",
-        "SOLANA" | "SOL" => "🟣",
-        "BTC" | "BITCOIN" => "🟠",
-        _ => "📍",
+async fn show_alert_chain_or_type(bot: &Bot, chat_id: ChatId, message_id: MessageId, symbol: &str) -> HandlerResult {
+    let chains = chains_for_symbol(symbol);
+
+    if chains.len() == 1 {
+        // Single chain — skip chain picker, go directly to alert type
+        let chain_str = chains[0].as_str();
+        let text = format!(
+            "🔔 Alert for {}\n\nSelect alert type:",
+            symbol
+        );
+
+        bot.edit_message_text(chat_id, message_id, text)
+            .reply_markup(keyboards::alert_type_selection(symbol, chain_str))
+            .await?;
+    } else {
+        // Multiple chains — show chain picker
+        let text = format!(
+            "🔔 Alert for {}\n\n{} is available on multiple chains.\nSelect which chain:",
+            symbol, symbol
+        );
+
+        bot.edit_message_text(chat_id, message_id, text)
+            .reply_markup(keyboards::alert_chain_selection(symbol, &chains))
+            .await?;
     }
+
+    Ok(())
+}
+
+async fn show_alert_type_selection_screen(
+    bot: &Bot,
+    chat_id: ChatId,
+    message_id: MessageId,
+    symbol: &str,
+    chain: &str,
+    state: &Arc<BotState>,
+) -> HandlerResult {
+    // Fetch current price to show context
+    let price_str = match state.price_service.get_price(symbol).await {
+        Ok(p) => format!("Current price: ${:.2}", p.usd_price),
+        Err(_) => String::new(),
+    };
+
+    let chain_name = chain.parse::<Chain>()
+        .map(|c| c.display_name())
+        .unwrap_or(chain);
+
+    let text = format!(
+        "🔔 Alert for {} on {}\n{}\n\nSelect alert type:",
+        symbol, chain_name, price_str
+    );
+
+    bot.edit_message_text(chat_id, message_id, text)
+        .reply_markup(keyboards::alert_type_selection(symbol, chain))
+        .await?;
+
+    Ok(())
+}
+
+async fn show_alert_value_prompt(
+    bot: &Bot,
+    chat_id: ChatId,
+    message_id: MessageId,
+    symbol: &str,
+    chain: &str,
+    alert_kind: &str,
+    user_id: i64,
+    state: &Arc<BotState>,
+) -> HandlerResult {
+    // Fetch current price
+    let price_info = match state.price_service.get_price(symbol).await {
+        Ok(p) => Some(p),
+        Err(_) => None,
+    };
+
+    let current_price_str = price_info
+        .as_ref()
+        .map(|p| format!("\n💰 Current price: ${:.2}", p.usd_price))
+        .unwrap_or_default();
+
+    let prompt = match alert_kind {
+        "above" => format!(
+            "📈 Alert: {} Price Above\n{}\n\nEnter the target price in USD:",
+            symbol, current_price_str
+        ),
+        "below" => format!(
+            "📉 Alert: {} Price Below\n{}\n\nEnter the target price in USD:",
+            symbol, current_price_str
+        ),
+        "percent" => format!(
+            "⚡ Alert: {} Percent Change\n{}\n\nEnter the percent change (e.g. 10 for +10%, -5 for -5%):",
+            symbol, current_price_str
+        ),
+        _ => return Ok(()),
+    };
+
+    // Set dialogue state
+    {
+        let mut storage = state.dialogue_storage.write().await;
+        storage.insert(user_id, DialogueState::WaitingForAlertValue {
+            token_symbol: symbol.to_string(),
+            chain: chain.to_string(),
+            alert_kind: alert_kind.to_string(),
+        });
+    }
+
+    let keyboard = teloxide::types::InlineKeyboardMarkup::new(vec![
+        vec![
+            teloxide::types::InlineKeyboardButton::callback("❌ Cancel", "alert:cancel"),
+        ],
+    ]);
+
+    bot.edit_message_text(chat_id, message_id, prompt)
+        .reply_markup(keyboard)
+        .await?;
+
+    Ok(())
+}
+
+async fn show_alert_confirmation(
+    bot: &Bot,
+    chat_id: ChatId,
+    token_symbol: &str,
+    chain: &str,
+    alert_kind: &str,
+    value: f64,
+    user_id: i64,
+    state: &Arc<BotState>,
+) -> HandlerResult {
+    let chain_name = chain.parse::<Chain>()
+        .map(|c| c.display_name())
+        .unwrap_or(chain);
+
+    let condition = match alert_kind {
+        "above" => format!("Above ${:.2}", value),
+        "below" => format!("Below ${:.2}", value),
+        "percent" => format!("{:+.1}% change", value),
+        _ => "Unknown".to_string(),
+    };
+
+    // Fetch current price for context
+    let current_price_str = match state.price_service.get_price(token_symbol).await {
+        Ok(p) => format!("\n💰 Current Price: ${:.2}", p.usd_price),
+        Err(_) => String::new(),
+    };
+
+    let text = format!(
+        "🔔 Confirm Price Alert\n\n\
+Token: {}\n\
+Chain: {}\n\
+Condition: {}{}\n\n\
+Create this alert?",
+        token_symbol, chain_name, condition, current_price_str
+    );
+
+    // Store confirmation state
+    {
+        let mut storage = state.dialogue_storage.write().await;
+        storage.insert(user_id, DialogueState::PendingAlertConfirmation {
+            token_symbol: token_symbol.to_string(),
+            chain: chain.to_string(),
+            alert_kind: alert_kind.to_string(),
+            value,
+        });
+    }
+
+    let keyboard = teloxide::types::InlineKeyboardMarkup::new(vec![
+        vec![
+            teloxide::types::InlineKeyboardButton::callback("✅ Create Alert", "alert:confirm"),
+        ],
+        vec![
+            teloxide::types::InlineKeyboardButton::callback("❌ Cancel", "alert:cancel"),
+        ],
+    ]);
+
+    bot.send_message(chat_id, text)
+        .reply_markup(keyboard)
+        .await?;
+
+    Ok(())
+}
+
+async fn confirm_create_alert(
+    bot: &Bot,
+    chat_id: ChatId,
+    message_id: MessageId,
+    user_id: i64,
+    state: &Arc<BotState>,
+) -> HandlerResult {
+    use crate::enums::AlertType;
+    use crate::services::price_alert_service::CreateAlertRequest;
+
+    let dialogue_state = {
+        let storage = state.dialogue_storage.read().await;
+        storage.get(&user_id).cloned()
+    };
+
+    let (token_symbol, chain, alert_kind, value) = match dialogue_state {
+        Some(DialogueState::PendingAlertConfirmation { token_symbol, chain, alert_kind, value }) => {
+            (token_symbol, chain, alert_kind, value)
+        }
+        _ => {
+            bot.edit_message_text(chat_id, message_id, "❌ Alert expired. Please start again.")
+                .reply_markup(keyboards::alerts_menu())
+                .await?;
+            return Ok(());
+        }
+    };
+
+    // Clear dialogue state
+    {
+        let mut storage = state.dialogue_storage.write().await;
+        storage.remove(&user_id);
+    }
+
+    bot.edit_message_text(chat_id, message_id, "⏳ Creating alert...")
+        .await?;
+
+    // Build alert type
+    let alert_type = match alert_kind.as_str() {
+        "above" => AlertType::Above { target_price: value },
+        "below" => AlertType::Below { target_price: value },
+        "percent" => {
+            match state.price_service.get_price(&token_symbol).await {
+                Ok(current_price) => AlertType::PercentChange {
+                    percent: value,
+                    base_price: current_price.usd_price,
+                },
+                Err(e) => {
+                    bot.edit_message_text(chat_id, message_id, format!("❌ Could not get current price: {}", e))
+                        .reply_markup(keyboards::alerts_menu())
+                        .await?;
+                    return Ok(());
+                }
+            }
+        }
+        _ => {
+            bot.edit_message_text(chat_id, message_id, "❌ Invalid alert type")
+                .reply_markup(keyboards::alerts_menu())
+                .await?;
+            return Ok(());
+        }
+    };
+
+    let request = CreateAlertRequest {
+        user_id: user_id.to_string(),
+        token_symbol: token_symbol.clone(),
+        chain: chain.clone(),
+        token_address: None,
+        alert_type,
+    };
+
+    match state.price_alert_service.create_alert(request).await {
+        Ok(_) => {
+            let chain_name = chain.parse::<Chain>()
+                .map(|c| c.display_name())
+                .unwrap_or(&chain);
+
+            let condition = match alert_kind.as_str() {
+                "above" => format!("Above ${:.2}", value),
+                "below" => format!("Below ${:.2}", value),
+                "percent" => format!("{:+.1}% change", value),
+                _ => "Unknown".to_string(),
+            };
+
+            let text = format!(
+                "✅ Alert Created!\n\n\
+Token: {}\n\
+Chain: {}\n\
+Condition: {}\n\n\
+You'll be notified when triggered.",
+                token_symbol, chain_name, condition
+            );
+
+            bot.edit_message_text(chat_id, message_id, text)
+                .reply_markup(keyboards::alerts_menu())
+                .await?;
+        }
+        Err(e) => {
+            bot.edit_message_text(chat_id, message_id, format!("❌ Failed to create alert: {}", e))
+                .reply_markup(keyboards::alerts_menu())
+                .await?;
+        }
+    }
+
+    Ok(())
+}
+
+fn chain_emoji(chain: &str) -> &'static str {
+    chain.parse::<Chain>().map(|c| c.emoji()).unwrap_or("📍")
 }

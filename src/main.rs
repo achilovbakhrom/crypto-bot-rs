@@ -1,5 +1,6 @@
 use crypto_bot::{ Config, Result };
 use axum::{ Router, routing::{ get, post } };
+use migration::MigratorTrait;
 use std::sync::Arc;
 use tokio::signal;
 use tower_http::cors::CorsLayer;
@@ -25,12 +26,34 @@ async fn main() -> Result<()> {
         .map_err(|e| crypto_bot::AppError::Database(e))?;
     tracing::info!("Database connected successfully");
 
+    // Run pending migrations automatically
+    migration::Migrator::up(&db, None)
+        .await
+        .map_err(|e| crypto_bot::AppError::Internal(format!("Migration failed: {}", e)))?;
+    tracing::info!("Database migrations applied successfully");
+
     let encryptor = Arc::new(crypto_bot::crypto::Encryptor::new(&config.encryption_key)?);
     let rpc_manager = Arc::new(crypto_bot::rpc::RpcManager::new(&config)?);
     tracing::info!("RPC manager initialized");
 
     let repository = Arc::new(crypto_bot::db::WalletRepository::new(db.clone()));
     let transaction_repo = Arc::new(crypto_bot::db::TransactionRepository::new(db.clone()));
+    let token_metadata_repo = Arc::new(crypto_bot::db::TokenMetadataRepository::new(db.clone()));
+
+    // Optional: Alchemy token discovery service
+    let token_discovery: Option<Arc<crypto_bot::services::TokenDiscoveryService>> =
+        config.alchemy_api_key.as_ref().map(|key| {
+            tracing::info!("Alchemy API key found — token discovery enabled");
+            Arc::new(crypto_bot::services::TokenDiscoveryService::new(
+                key.clone(),
+                token_metadata_repo.clone(),
+            ))
+        });
+    if token_discovery.is_none() {
+        tracing::warn!("ALCHEMY_API_KEY not set — token discovery disabled");
+    }
+
+    let is_testnet = config.is_testnet();
 
     let wallet_service = Arc::new(
         crypto_bot::services::WalletService::new(
@@ -44,7 +67,9 @@ async fn main() -> Result<()> {
         crypto_bot::services::BalanceService::new(
             repository.clone(),
             rpc_manager.clone(),
-            encryptor.clone()
+            encryptor.clone(),
+            token_discovery.clone(),
+            is_testnet,
         )
     );
 
@@ -67,7 +92,9 @@ async fn main() -> Result<()> {
         crypto_bot::services::PortfolioService::new(
             repository.clone(),
             rpc_manager.clone(),
-            price_service.clone()
+            price_service.clone(),
+            token_discovery.clone(),
+            is_testnet,
         )
     );
 

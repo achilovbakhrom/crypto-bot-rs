@@ -1,4 +1,5 @@
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
+use crate::enums::Chain;
 
 // Main menu keyboard
 pub fn main_menu() -> InlineKeyboardMarkup {
@@ -22,20 +23,30 @@ pub fn main_menu() -> InlineKeyboardMarkup {
     ])
 }
 
-// Chain selection keyboard for wallet creation
+// Chain selection keyboard for wallet creation — dynamic from Chain::all()
 pub fn chain_selection() -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup::new(vec![
-        vec![
-            InlineKeyboardButton::callback("🔷 Ethereum (ETH)", "chain:ETH"),
-            InlineKeyboardButton::callback("🟡 BSC (BNB)", "chain:BSC"),
-        ],
-        vec![
-            InlineKeyboardButton::callback("🟣 Solana (SOL)", "chain:SOLANA"),
-        ],
-        vec![
-            InlineKeyboardButton::callback("« Back to Menu", "menu:main"),
-        ],
-    ])
+    let chains = Chain::all();
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+    let mut row: Vec<InlineKeyboardButton> = Vec::new();
+
+    for chain in chains {
+        let label = format!("{} {} ({})", chain.emoji(), chain.display_name(), chain.native_symbol());
+        let btn = InlineKeyboardButton::callback(label, format!("chain:{}", chain.as_str()));
+        row.push(btn);
+        if row.len() == 2 {
+            rows.push(row);
+            row = Vec::new();
+        }
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+
+    rows.push(vec![
+        InlineKeyboardButton::callback("« Back to Menu", "menu:main"),
+    ]);
+
+    InlineKeyboardMarkup::new(rows)
 }
 
 // Wallet actions keyboard
@@ -51,6 +62,10 @@ pub fn wallet_actions(wallet_id: &str) -> InlineKeyboardMarkup {
         ],
         vec![
             InlineKeyboardButton::callback("📋 History", format!("wallet:history:{}", wallet_id)),
+            InlineKeyboardButton::callback("🪙 Tokens", format!("wallet:tokens:{}", wallet_id)),
+        ],
+        vec![
+            InlineKeyboardButton::callback("🔍 View on Explorer", format!("wallet:explorer:{}", wallet_id)),
         ],
         vec![
             InlineKeyboardButton::callback("« Back to Wallets", "menu:wallets"),
@@ -164,18 +179,16 @@ pub fn refresh_button(action: &str) -> InlineKeyboardMarkup {
     ])
 }
 
-// Send menu - choose what to send
+// Send menu - choose what to send, using Chain::emoji() for label
 pub fn send_menu(wallet_id: &str, chain: &str) -> InlineKeyboardMarkup {
-    let native_token = match chain {
-        "ETH" => "🔷 Send ETH",
-        "BSC" => "🟡 Send BNB",
-        "SOLANA" => "🟣 Send SOL",
-        _ => "📤 Send Native Token",
-    };
+    let native_label = chain
+        .parse::<Chain>()
+        .map(|c| format!("{} Send {}", c.emoji(), c.native_symbol()))
+        .unwrap_or_else(|_| "📤 Send Native Token".to_string());
 
     InlineKeyboardMarkup::new(vec![
         vec![
-            InlineKeyboardButton::callback(native_token, format!("send:native:{}", wallet_id)),
+            InlineKeyboardButton::callback(&native_label, format!("send:native:{}", wallet_id)),
         ],
         vec![
             InlineKeyboardButton::callback("🪙 Send Token (ERC20/SPL)", format!("send:token:{}", wallet_id)),
@@ -187,7 +200,7 @@ pub fn send_menu(wallet_id: &str, chain: &str) -> InlineKeyboardMarkup {
 }
 
 // Send amount presets
-pub fn send_amount_presets(wallet_id: &str, balance: &str) -> InlineKeyboardMarkup {
+pub fn send_amount_presets(wallet_id: &str, _balance: &str) -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new(vec![
         vec![
             InlineKeyboardButton::callback("25%", format!("send:amount:{}:25", wallet_id)),
@@ -204,19 +217,20 @@ pub fn send_amount_presets(wallet_id: &str, balance: &str) -> InlineKeyboardMark
     ])
 }
 
-// Swap menu - choose swap type
+// Swap menu - choose swap type, dynamic per chain
 pub fn swap_menu(wallet_id: &str, chain: &str) -> InlineKeyboardMarkup {
-    let (token1, token2) = match chain {
-        "ETH" => ("ETH → USDC", "ETH → USDT"),
-        "BSC" => ("BNB → USDT", "BNB → BUSD"),
-        "SOLANA" => ("SOL → USDC", "SOL → USDT"),
-        _ => ("Native → Stable", "Native → Other"),
+    let parsed = chain.parse::<Chain>().ok();
+    let native = parsed.map(|c| c.native_symbol()).unwrap_or("NATIVE");
+
+    let (label1, label2) = match chain {
+        "BSC" => (format!("{} → USDT", native), format!("{} → BUSD", native)),
+        _ => (format!("{} → USDC", native), format!("{} → USDT", native)),
     };
 
     InlineKeyboardMarkup::new(vec![
         vec![
-            InlineKeyboardButton::callback(token1, format!("swap:preset1:{}", wallet_id)),
-            InlineKeyboardButton::callback(token2, format!("swap:preset2:{}", wallet_id)),
+            InlineKeyboardButton::callback(&label1, format!("swap:preset1:{}", wallet_id)),
+            InlineKeyboardButton::callback(&label2, format!("swap:preset2:{}", wallet_id)),
         ],
         vec![
             InlineKeyboardButton::callback("🔄 Custom Swap", format!("swap:custom:{}", wallet_id)),
@@ -243,4 +257,112 @@ pub fn swap_amount_presets(wallet_id: &str, from_token: &str, to_token: &str) ->
             InlineKeyboardButton::callback("« Back", format!("wallet:swap:{}", wallet_id)),
         ],
     ])
+}
+
+// Alert token selection keyboard
+pub fn alert_token_selection() -> InlineKeyboardMarkup {
+    let tokens = [
+        ("₿ BTC", "BTC"), ("🔷 ETH", "ETH"),
+        ("🟣 SOL", "SOL"), ("🟡 BNB", "BNB"),
+        ("✕ XRP", "XRP"), ("₳ ADA", "ADA"),
+        ("🔴 AVAX", "AVAX"), ("🐕 DOGE", "DOGE"),
+        ("⚫ DOT", "DOT"), ("🔗 LINK", "LINK"),
+        ("🟣 MATIC", "MATIC"), ("🦄 UNI", "UNI"),
+    ];
+
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+    let mut row: Vec<InlineKeyboardButton> = Vec::new();
+
+    for (label, symbol) in tokens {
+        row.push(InlineKeyboardButton::callback(label, format!("alert:token:{}", symbol)));
+        if row.len() == 3 {
+            rows.push(row);
+            row = Vec::new();
+        }
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+
+    rows.push(vec![
+        InlineKeyboardButton::callback("« Back to Alerts", "menu:alerts"),
+    ]);
+
+    InlineKeyboardMarkup::new(rows)
+}
+
+// Alert chain selection keyboard for multi-chain tokens
+pub fn alert_chain_selection(symbol: &str, chains: &[Chain]) -> InlineKeyboardMarkup {
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+    let mut row: Vec<InlineKeyboardButton> = Vec::new();
+
+    for chain in chains {
+        let label = format!("{} {}", chain.emoji(), chain.display_name());
+        row.push(InlineKeyboardButton::callback(label, format!("alert:chain:{}:{}", symbol, chain.as_str())));
+        if row.len() == 2 {
+            rows.push(row);
+            row = Vec::new();
+        }
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+
+    rows.push(vec![
+        InlineKeyboardButton::callback("« Back", "alert:new"),
+    ]);
+
+    InlineKeyboardMarkup::new(rows)
+}
+
+// Alert type selection keyboard
+pub fn alert_type_selection(symbol: &str, chain: &str) -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
+        vec![
+            InlineKeyboardButton::callback("📈 Price Above", format!("alert:type:{}:{}:above", symbol, chain)),
+        ],
+        vec![
+            InlineKeyboardButton::callback("📉 Price Below", format!("alert:type:{}:{}:below", symbol, chain)),
+        ],
+        vec![
+            InlineKeyboardButton::callback("⚡ Percent Change", format!("alert:type:{}:{}:percent", symbol, chain)),
+        ],
+        vec![
+            InlineKeyboardButton::callback("« Back", "alert:new"),
+        ],
+    ])
+}
+
+/// Token list keyboard with pagination for wallet token view
+pub fn token_list(wallet_id: &str, page: usize, total_pages: usize) -> InlineKeyboardMarkup {
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+
+    // Pagination row
+    if total_pages > 1 {
+        let mut nav = Vec::new();
+        if page > 0 {
+            nav.push(InlineKeyboardButton::callback(
+                "◀️ Prev",
+                format!("wallet:tokens:{}:{}", wallet_id, page - 1),
+            ));
+        }
+        nav.push(InlineKeyboardButton::callback(
+            format!("Page {}/{}", page + 1, total_pages),
+            "noop",
+        ));
+        if page + 1 < total_pages {
+            nav.push(InlineKeyboardButton::callback(
+                "Next ▶️",
+                format!("wallet:tokens:{}:{}", wallet_id, page + 1),
+            ));
+        }
+        rows.push(nav);
+    }
+
+    rows.push(vec![
+        InlineKeyboardButton::callback("🔄 Refresh", format!("wallet:tokens:{}", wallet_id)),
+        InlineKeyboardButton::callback("« Back to Wallet", format!("wallet:select:{}", wallet_id)),
+    ]);
+
+    InlineKeyboardMarkup::new(rows)
 }

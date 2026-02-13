@@ -1,4 +1,5 @@
 use super::{ DexProvider, SwapQuote, SwapResult };
+use crate::enums::Chain;
 use crate::error::{ AppError, Result };
 use async_trait::async_trait;
 use ethers::prelude::*;
@@ -31,21 +32,27 @@ pub struct UniswapV2Provider {
 
 impl UniswapV2Provider {
     pub fn new(chain: &str, rpc_url: &str) -> Result<Self> {
-        let router_address = match chain {
-            "ETH" =>
-                "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
-                    .parse()
-                    .map_err(|e| AppError::Internal(format!("Invalid router address: {}", e)))?,
-            "BSC" =>
-                "0x10ED43C718714eb63d5aA57B78B54704E256024E" // PancakeSwap V2
-                    .parse()
-                    .map_err(|e| AppError::Internal(format!("Invalid router address: {}", e)))?,
-            _ => {
+        let parsed: Chain = chain.parse()?;
+        let router_str = match parsed {
+            Chain::Eth => "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",       // Uniswap V2
+            Chain::Bsc => "0x10ED43C718714eb63d5aA57B78B54704E256024E",       // PancakeSwap V2
+            Chain::Polygon => "0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff",   // QuickSwap
+            Chain::Avalanche => "0x60aE616a2155Ee3d9A68541Ba4544862310933d4", // Trader Joe
+            Chain::Arbitrum => "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506",  // SushiSwap
+            Chain::Optimism => "0x9c12939390052919aF3155f41Bf4160Fd3666A6f",  // Velodrome
+            Chain::Base => "0x8cFe327CEc66d1C090Dd72bd0FF11d690C33a2Eb",      // BaseSwap
+            Chain::Fantom => "0xF491e7B69E4244ad4002BC14e878a34207E38c29",    // SpookySwap
+            Chain::Cronos => "0x145863Eb42Cf62847A6Ca784e6416C1682b1b2Ae",    // VVS Finance
+            Chain::Gnosis => "0x1C232F01118CB8B424793ae03F870aa7D0ac7f77",    // Honeyswap
+            Chain::Solana | Chain::Btc | Chain::Xrp | Chain::Cardano => {
                 return Err(
-                    AppError::Validation(format!("Unsupported chain for Uniswap: {}", chain))
+                    AppError::Validation(format!("{} is not supported for Uniswap-style DEX", parsed))
                 );
             }
         };
+        let router_address = router_str
+            .parse()
+            .map_err(|e| AppError::Internal(format!("Invalid router address: {}", e)))?;
 
         let provider = Provider::<Http>
             ::try_from(rpc_url)
@@ -58,20 +65,30 @@ impl UniswapV2Provider {
         })
     }
 
+    fn parsed_chain(&self) -> Chain {
+        self.chain.parse().expect("chain validated in constructor")
+    }
+
     fn get_weth_address(&self) -> Address {
-        match self.chain.as_str() {
-            "ETH" => "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".parse().unwrap(),
-            "BSC" =>
-                "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c" // WBNB
-                    .parse()
-                    .unwrap(),
-            _ => panic!("Unsupported chain"),
+        match self.parsed_chain() {
+            Chain::Eth => "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".parse().unwrap(),       // WETH
+            Chain::Bsc => "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c".parse().unwrap(),       // WBNB
+            Chain::Polygon => "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270".parse().unwrap(),   // WMATIC
+            Chain::Avalanche => "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7".parse().unwrap(), // WAVAX
+            Chain::Arbitrum => "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1".parse().unwrap(),   // WETH
+            Chain::Optimism => "0x4200000000000000000000000000000000000006".parse().unwrap(),   // WETH
+            Chain::Base => "0x4200000000000000000000000000000000000006".parse().unwrap(),        // WETH
+            Chain::Fantom => "0x21be370D5312f44cB42ce377BC9b8a0cEF1A4C83".parse().unwrap(),    // WFTM
+            Chain::Cronos => "0x5C7F8A570d578ED84E63fdFA7b1eE72dEae1AE23".parse().unwrap(),    // WCRO
+            Chain::Gnosis => "0xe91D153E0b41518A2Ce8Dd3D7944Fa863463a97d".parse().unwrap(),    // WXDAI
+            Chain::Solana | Chain::Btc | Chain::Xrp | Chain::Cardano => unreachable!("Non-EVM chain not supported in Uniswap V2"),
         }
     }
 
     fn resolve_token_address(&self, token: &str) -> Result<Address> {
         // Handle native tokens
-        if token == "ETH" || token == "BNB" {
+        let native = self.parsed_chain().native_symbol();
+        if token == native {
             return Ok(self.get_weth_address());
         }
 
@@ -205,14 +222,22 @@ impl DexProvider for UniswapV2Provider {
     }
 
     fn name(&self) -> &str {
-        match self.chain.as_str() {
-            "ETH" => "Uniswap V2",
-            "BSC" => "PancakeSwap V2",
-            _ => "Unknown",
+        match self.parsed_chain() {
+            Chain::Eth => "Uniswap V2",
+            Chain::Bsc => "PancakeSwap V2",
+            Chain::Polygon => "QuickSwap",
+            Chain::Avalanche => "Trader Joe",
+            Chain::Arbitrum => "SushiSwap",
+            Chain::Optimism => "Velodrome",
+            Chain::Base => "BaseSwap",
+            Chain::Fantom => "SpookySwap",
+            Chain::Cronos => "VVS Finance",
+            Chain::Gnosis => "Honeyswap",
+            Chain::Solana | Chain::Btc | Chain::Xrp | Chain::Cardano => unreachable!("Non-EVM chain not supported in Uniswap V2"),
         }
     }
 
     fn supported_chains(&self) -> Vec<&str> {
-        vec!["ETH", "BSC"]
+        Chain::all_evm().iter().map(|c| c.as_str()).collect()
     }
 }

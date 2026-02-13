@@ -2,6 +2,7 @@ use teloxide::prelude::*;
 use teloxide::types::ParseMode;
 use crate::bot::{ BotState, commands::Command, keyboards };
 use super::constants::{ messages as msg, chains };
+use crate::enums::{ Chain, AlertType, AlertKind, RecurringType, ScheduleStatus, TxStatus };
 use crate::services::*;
 use crate::services::scheduling_service::{ SchedulingService, ScheduleRequest };
 use crate::services::price_alert_service;
@@ -84,23 +85,27 @@ pub async fn handle_command(
 }
 
 async fn handle_start(bot: Bot, msg: Message) -> ResponseResult<()> {
-    let welcome = r#"🔐 *Welcome to Crypto Wallet Bot\!*
+    let chain_lines: String = Chain::all()
+        .iter()
+        .map(|c| format!("{} {} \\({}\\)", c.emoji(), escape_markdown(c.display_name()), escape_markdown(c.native_symbol())))
+        .collect::<Vec<_>>()
+        .join("\n");
 
-Your secure multi\-chain wallet manager\.
-
-*Supported Blockchains:*
-🔷 Ethereum \(ETH\)
-🟡 Binance Smart Chain \(BSC\)
-🟣 Solana \(SOL\)
-
-*What I can do:*
-• Create and manage wallets
-• Send and receive crypto
-• Track your portfolio
-• Set price alerts
-• Swap tokens
-
-Select an option below to get started:"#;
+    let welcome = format!(
+        "🔐 *Welcome to Crypto Wallet Bot\\!*\n\n\
+Your secure multi\\-chain wallet manager\\.\n\n\
+*Supported Blockchains:*\n\
+{}\n\n\
+*What I can do:*\n\
+• Create and manage wallets\n\
+• Send and receive crypto\n\
+• Discover all your tokens automatically\n\
+• Track your portfolio with USD values\n\
+• Set price alerts\n\
+• Swap tokens\n\n\
+Select an option below to get started:",
+        chain_lines
+    );
 
     bot.send_message(msg.chat.id, welcome)
         .parse_mode(ParseMode::MarkdownV2)
@@ -126,25 +131,26 @@ async fn handle_create_wallet(
     user_id: String,
     state: Arc<BotState>
 ) -> ResponseResult<()> {
-    let chain = args.trim().to_uppercase();
+    let chain_str = args.trim().to_uppercase();
 
-    if chain.is_empty() {
+    if chain_str.is_empty() {
         bot.send_message(msg.chat.id, msg::ERR_CHAIN_REQUIRED).await?;
         return Ok(());
     }
 
     // Validate chain
-    if !chains::is_valid_chain(&chain) {
-        bot.send_message(msg.chat.id, msg::ERR_INVALID_CHAIN).await?;
-        return Ok(());
-    }
-
-    let normalized_chain = chains::normalize_chain(&chain);
+    let chain = match chain_str.parse::<Chain>() {
+        Ok(c) => c,
+        Err(_) => {
+            bot.send_message(msg.chat.id, msg::ERR_INVALID_CHAIN).await?;
+            return Ok(());
+        }
+    };
 
     bot.send_message(msg.chat.id, msg::STATUS_CREATING_WALLET).await?;
 
     match
-        state.wallet_service.generate_wallet(user_id, normalized_chain.to_string(), Some(0)).await
+        state.wallet_service.generate_wallet(user_id, chain.to_string(), Some(0)).await
     {
         Ok(response) => {
             let safe_msg = format!(
@@ -190,22 +196,22 @@ async fn handle_import_wallet(
         return Ok(());
     }
 
-    let chain = parts[0].to_uppercase();
     let key = parts[1..].join(" ");
 
-    if !chains::is_valid_chain(&chain) {
-        bot.send_message(msg.chat.id, msg::ERR_INVALID_CHAIN).await?;
-        return Ok(());
-    }
-
-    let normalized_chain = chains::normalize_chain(&chain);
+    let chain = match parts[0].to_uppercase().parse::<Chain>() {
+        Ok(c) => c,
+        Err(_) => {
+            bot.send_message(msg.chat.id, msg::ERR_INVALID_CHAIN).await?;
+            return Ok(());
+        }
+    };
 
     bot.send_message(msg.chat.id, msg::STATUS_IMPORTING_WALLET).await?;
 
     match
         state.wallet_service.restore_wallet(
             user_id,
-            normalized_chain.to_string(),
+            chain.to_string(),
             key,
             Some(0)
         ).await
@@ -581,7 +587,8 @@ async fn handle_batch_send(
             );
 
             for status in result.results.iter().take(10) {
-                let status_icon = if status.status == "pending" || status.status == "confirmed" {
+                let tx_status = status.status.parse::<TxStatus>().ok();
+                let status_icon = if matches!(tx_status, Some(TxStatus::Pending | TxStatus::Confirmed)) {
                     "✅"
                 } else {
                     "❌"
@@ -827,37 +834,52 @@ async fn handle_portfolio(
 async fn handle_prices(bot: Bot, msg: Message, state: Arc<BotState>) -> ResponseResult<()> {
     bot.send_message(msg.chat.id, "⏳ Fetching prices...").await?;
 
-    let symbols = vec!["ETH".to_string(), "BNB".to_string(), "SOL".to_string()];
+    // Build unique native symbols from all configured chains
+    let symbols: Vec<String> = state.config.configured_chains()
+        .iter()
+        .map(|c| c.native_symbol().to_string())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
 
     match state.price_service.get_prices(&symbols).await {
         Ok(prices) => {
             let mut response = String::from("💵 *Cryptocurrency Prices*\n\n");
 
-            for symbol in &["ETH", "BNB", "SOL"] {
-                if let Some(price) = prices.get(*symbol) {
-                    let change_emoji = match price.price_change_24h {
-                        Some(change) if change > 0.0 => "📈",
-                        Some(change) if change < 0.0 => "📉",
-                        _ => "➖",
-                    };
+            // Sort by price descending for consistent display
+            let mut sorted: Vec<_> = prices.iter().collect();
+            sorted.sort_by(|a, b| b.1.usd_price.partial_cmp(&a.1.usd_price).unwrap_or(std::cmp::Ordering::Equal));
 
-                    let change_text = if let Some(change) = price.price_change_24h {
-                        format!(" \\({}{:.2}%\\)", if change > 0.0 { "+" } else { "" }, change)
-                    } else {
-                        String::new()
-                    };
+            for (symbol, price) in &sorted {
+                let emoji = symbol.parse::<Chain>()
+                    .map(|c| c.emoji())
+                    .unwrap_or("🪙");
 
-                    response.push_str(
-                        &format!(
-                            "*{}:* ${} {}{}\n",
-                            escape_markdown(symbol),
-                            format_currency(price.usd_price),
-                            change_emoji,
-                            change_text
-                        )
-                    );
+                let change_emoji = match price.price_change_24h {
+                    Some(change) if change > 0.0 => "📈",
+                    Some(change) if change < 0.0 => "📉",
+                    _ => "➖",
+                };
 
-                    if let Some(market_cap) = price.market_cap {
+                let change_text = if let Some(change) = price.price_change_24h {
+                    format!(" \\({}{:.2}%\\)", if change > 0.0 { "\\+" } else { "" }, change)
+                } else {
+                    String::new()
+                };
+
+                response.push_str(
+                    &format!(
+                        "{} *{}:* ${} {}{}\n",
+                        emoji,
+                        escape_markdown(symbol),
+                        format_currency(price.usd_price),
+                        change_emoji,
+                        change_text
+                    )
+                );
+
+                if let Some(market_cap) = price.market_cap {
+                    if market_cap > 0.0 {
                         response.push_str(
                             &format!(
                                 "  📊 Cap: ${}B\n",
@@ -865,18 +887,9 @@ async fn handle_prices(bot: Bot, msg: Message, state: Arc<BotState>) -> Response
                             )
                         );
                     }
-
-                    if let Some(volume) = price.volume_24h {
-                        response.push_str(
-                            &format!(
-                                "  📈 Vol: ${}M\n",
-                                escape_markdown(&format!("{:.1}", volume / 1_000_000.0))
-                            )
-                        );
-                    }
-
-                    response.push_str("\n");
                 }
+
+                response.push_str("\n");
             }
 
             response.push_str("_Updated just now_");
@@ -911,21 +924,23 @@ async fn handle_save_address(
 
     let name = parts[0].to_string();
     let address = parts[1].to_string();
-    let chain = parts[2].to_uppercase();
     let notes = if parts.len() > 3 { Some(parts[3..].join(" ")) } else { None };
 
     // Validate chain
-    if !["ETH", "BSC", "SOLANA"].contains(&chain.as_str()) {
-        bot.send_message(msg.chat.id, "Invalid chain. Supported chains: ETH, BSC, SOLANA").await?;
-        return Ok(());
-    }
+    let chain = match parts[2].to_uppercase().parse::<Chain>() {
+        Ok(c) => c,
+        Err(_) => {
+            bot.send_message(msg.chat.id, msg::ERR_INVALID_CHAIN).await?;
+            return Ok(());
+        }
+    };
 
     match
         state.address_book_service.save_address(
             user_id,
             name.clone(),
             address.clone(),
-            chain.clone(),
+            chain.to_string(),
             notes
         ).await
     {
@@ -1141,13 +1156,13 @@ async fn handle_schedule(
     };
 
     let mut token_address = None;
-    let mut recurring_type = None;
+    let mut recurring_type: Option<RecurringType> = None;
 
     for part in remaining_parts {
         if part.starts_with("0x") || part.starts_with("0X") {
             token_address = Some(part.to_string());
-        } else if ["daily", "weekly", "monthly"].contains(&part.to_lowercase().as_str()) {
-            recurring_type = Some(part.to_lowercase());
+        } else if let Ok(rt) = part.to_lowercase().parse::<RecurringType>() {
+            recurring_type = Some(rt);
         }
     }
 
@@ -1179,7 +1194,7 @@ async fn handle_schedule(
     match state.scheduling_service.schedule_transaction(schedule_req).await {
         Ok(schedule) => {
             let recurring_text = if let Some(rec) = recurring_type {
-                format!(" \\({}\\)", escape_markdown(&rec))
+                format!(" \\({}\\)", escape_markdown(rec.as_str()))
             } else {
                 String::new()
             };
@@ -1217,7 +1232,7 @@ async fn handle_list_scheduled(
     user_id: String,
     state: Arc<BotState>
 ) -> ResponseResult<()> {
-    match state.scheduling_service.list_scheduled(&user_id, Some("pending")).await {
+    match state.scheduling_service.list_scheduled(&user_id, Some(ScheduleStatus::Pending.as_str())).await {
         Ok(schedules) => {
             if schedules.is_empty() {
                 bot
@@ -1323,7 +1338,7 @@ async fn handle_set_alert(
     let symbol = parts[0].to_uppercase();
     let alert_type_str = parts[1].to_lowercase();
     let value_str = parts[2];
-    let chain = if parts.len() > 3 { parts[3].to_uppercase() } else { "ETH".to_string() };
+    let chain = if parts.len() > 3 { parts[3].to_uppercase() } else { Chain::Eth.to_string() };
 
     let value: f64 = match value_str.parse() {
         Ok(v) => v,
@@ -1333,14 +1348,26 @@ async fn handle_set_alert(
         }
     };
 
-    // Get current price for percent alerts
-    let alert_type = match alert_type_str.as_str() {
-        "above" => price_alert_service::AlertType::Above { target_price: value },
-        "below" => price_alert_service::AlertType::Below { target_price: value },
-        "percent" => {
+    // Parse alert kind
+    let alert_kind = match alert_type_str.parse::<AlertKind>() {
+        Ok(k) => k,
+        Err(_) => {
+            bot.send_message(
+                msg.chat.id,
+                "❌ Alert type must be 'above', 'below', or 'percent'"
+            ).await?;
+            return Ok(());
+        }
+    };
+
+    // Build typed AlertType
+    let alert_type = match alert_kind {
+        AlertKind::Above => AlertType::Above { target_price: value },
+        AlertKind::Below => AlertType::Below { target_price: value },
+        AlertKind::PercentChange => {
             match state.price_service.get_price(&symbol).await {
                 Ok(current_price) => {
-                    price_alert_service::AlertType::PercentChange {
+                    AlertType::PercentChange {
                         percent: value,
                         base_price: current_price.usd_price,
                     }
@@ -1353,13 +1380,6 @@ async fn handle_set_alert(
                     return Ok(());
                 }
             }
-        }
-        _ => {
-            bot.send_message(
-                msg.chat.id,
-                "❌ Alert type must be 'above', 'below', or 'percent'"
-            ).await?;
-            return Ok(());
         }
     };
 
@@ -1414,22 +1434,23 @@ async fn handle_list_alerts(
                 let mut response = String::from("*📊 Your Active Alerts*\n\n");
 
                 for alert in alerts {
-                    let alert_desc = match alert.alert_type.as_str() {
-                        "above" => {
+                    let alert_kind = alert.alert_type.parse::<AlertKind>().ok();
+                    let alert_desc = match alert_kind {
+                        Some(AlertKind::Above) => {
                             if let Some(price) = alert.target_price {
                                 format!("Above ${:.2}", price)
                             } else {
                                 "Above (price not set)".to_string()
                             }
                         }
-                        "below" => {
+                        Some(AlertKind::Below) => {
                             if let Some(price) = alert.target_price {
                                 format!("Below ${:.2}", price)
                             } else {
                                 "Below (price not set)".to_string()
                             }
                         }
-                        "percent_change" => {
+                        Some(AlertKind::PercentChange) => {
                             let percent = alert.percent_change
                                 .map(|p| format!("{:.2}", p))
                                 .unwrap_or("0".to_string());
@@ -1438,7 +1459,7 @@ async fn handle_list_alerts(
                                 .unwrap_or("0".to_string());
                             format!("{}% change from ${}", percent, base)
                         }
-                        _ => "Unknown alert type".to_string(),
+                        None => "Unknown alert type".to_string(),
                     };
 
                     response.push_str(

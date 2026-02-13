@@ -2,6 +2,7 @@ use crate::db::entity::swap;
 use crate::dex::{ DexProvider, SwapQuote };
 use crate::dex::uniswap::UniswapV2Provider;
 use crate::dex::jupiter::JupiterProvider;
+use crate::enums::{ Chain, SwapStatus };
 use crate::error::{ AppError, Result };
 use crate::services::WalletService;
 use sea_orm::{
@@ -108,7 +109,7 @@ impl SwapService {
             ),
             slippage: ActiveValue::Set(Decimal::from_f64_retain(request.slippage).unwrap()),
             tx_hash: ActiveValue::Set(None),
-            status: ActiveValue::Set("pending".to_string()),
+            status: ActiveValue::Set(SwapStatus::Pending.to_string()),
             error_message: ActiveValue::Set(None),
             gas_fee: ActiveValue::Set(None),
             route: ActiveValue::Set(Some(serde_json::json!(quote.route))),
@@ -134,7 +135,7 @@ impl SwapService {
             Ok(result) => {
                 // Update swap record with success
                 let mut swap_active: swap::ActiveModel = swap_model.clone().into();
-                swap_active.status = ActiveValue::Set("success".to_string());
+                swap_active.status = ActiveValue::Set(SwapStatus::Success.to_string());
                 swap_active.tx_hash = ActiveValue::Set(Some(result.tx_hash.clone()));
                 swap_active.to_amount = ActiveValue::Set(
                     Decimal::from_f64_retain(result.to_amount).unwrap()
@@ -153,7 +154,7 @@ impl SwapService {
             Err(e) => {
                 // Update swap record with failure
                 let mut swap_active: swap::ActiveModel = swap_model.clone().into();
-                swap_active.status = ActiveValue::Set("failed".to_string());
+                swap_active.status = ActiveValue::Set(SwapStatus::Failed.to_string());
                 swap_active.error_message = ActiveValue::Set(Some(e.to_string()));
                 swap_active.updated_at = ActiveValue::Set(chrono::Utc::now());
 
@@ -194,17 +195,27 @@ impl SwapService {
 
     /// Get DEX provider based on chain
     fn get_dex_provider(&self, chain: &str) -> Result<Box<dyn DexProvider>> {
-        match chain {
-            "ETH" | "BSC" => {
+        let parsed: Chain = chain.parse()?;
+        match parsed {
+            Chain::Solana => Ok(Box::new(JupiterProvider::new())),
+            chain if chain.is_evm() => {
+                // For EVM chains, use Uniswap V2 compatible DEX
                 let rpc_url = match chain {
-                    "ETH" => "https://eth.llamarpc.com",
-                    "BSC" => "https://bsc-dataseed.binance.org",
+                    Chain::Eth => "https://eth.llamarpc.com",
+                    Chain::Bsc => "https://bsc-dataseed.binance.org",
+                    Chain::Polygon => "https://polygon-rpc.com",
+                    Chain::Avalanche => "https://api.avax.network/ext/bc/C/rpc",
+                    Chain::Arbitrum => "https://arb1.arbitrum.io/rpc",
+                    Chain::Optimism => "https://mainnet.optimism.io",
+                    Chain::Base => "https://mainnet.base.org",
+                    Chain::Fantom => "https://rpc.ftm.tools",
+                    Chain::Cronos => "https://evm.cronos.org",
+                    Chain::Gnosis => "https://rpc.gnosischain.com",
                     _ => unreachable!(),
                 };
-                Ok(Box::new(UniswapV2Provider::new(chain, rpc_url)?))
+                Ok(Box::new(UniswapV2Provider::new(chain.as_str(), rpc_url)?))
             }
-            "SOLANA" => Ok(Box::new(JupiterProvider::new())),
-            _ => Err(AppError::Validation(format!("Swaps not supported on chain: {}", chain))),
+            _ => Err(AppError::InvalidInput(format!("Swap not supported for chain: {}", chain))),
         }
     }
 }

@@ -24,13 +24,13 @@ impl MigrationTrait for Migration {
                 .col(ColumnDef::new(AddressBook::Notes).text().null())
                 .col(
                     ColumnDef::new(AddressBook::CreatedAt)
-                        .timestamp()
+                        .timestamp_with_time_zone()
                         .not_null()
                         .extra("DEFAULT NOW()".to_string())
                 )
                 .col(
                     ColumnDef::new(AddressBook::UpdatedAt)
-                        .timestamp()
+                        .timestamp_with_time_zone()
                         .not_null()
                         .extra("DEFAULT NOW()".to_string())
                 )

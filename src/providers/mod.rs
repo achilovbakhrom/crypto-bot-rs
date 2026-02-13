@@ -4,6 +4,7 @@ pub use chain_provider::{
     Balance,
     ChainProvider,
     GasEstimate,
+    TokenBalanceEntry,
     TransactionRequest,
     TransactionResponse,
     WalletInfo,

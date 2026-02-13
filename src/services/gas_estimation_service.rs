@@ -2,6 +2,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::db::WalletRepository;
+use crate::enums::Chain;
 use crate::error::Result;
 use crate::providers::GasEstimate;
 use crate::rpc::RpcManager;
@@ -48,17 +49,8 @@ impl GasEstimationService {
         ).await?;
 
         // Get native token price for USD calculation
-        let native_symbol = match wallet.chain.as_str() {
-            "ETH" => "ETH",
-            "BSC" => "BNB",
-            "SOLANA" => "SOL",
-            _ => {
-                return Ok(GasEstimateWithUsd {
-                    chain: wallet.chain,
-                    gas_estimate,
-                });
-            }
-        };
+        let chain: Chain = wallet.chain.parse()?;
+        let native_symbol = chain.native_symbol();
 
         if let Ok(price) = self.price_service.get_price(native_symbol).await {
             let fee_native: f64 = gas_estimate.total_cost_native.parse().unwrap_or(0.0);
@@ -78,16 +70,9 @@ impl GasEstimationService {
         let provider = self.rpc_manager.get_provider_by_chain(chain).await?;
 
         // For demonstration, estimate with a dummy transaction
-        let dummy_from = match chain {
-            "ETH" | "BSC" => "0x0000000000000000000000000000000000000001",
-            "SOLANA" => "11111111111111111111111111111111",
-            _ => {
-                return Err(crate::error::AppError::InvalidInput("Unsupported chain".to_string()));
-            }
-        };
-
-        let dummy_to = dummy_from;
-        let estimate = provider.estimate_gas(dummy_from, dummy_to, "0.001", None).await?;
+        let parsed: Chain = chain.parse()?;
+        let dummy_addr = parsed.dummy_address();
+        let estimate = provider.estimate_gas(dummy_addr, dummy_addr, "0.001", None).await?;
 
         // Parse gas prices
         let base_price = estimate.gas_price.clone().unwrap_or_default();

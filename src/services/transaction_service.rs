@@ -2,6 +2,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::db::{ TransactionRepository, WalletRepository };
+use crate::enums::TxStatus;
 use crate::error::{ AppError, Result };
 use crate::db::entity::transaction;
 
@@ -45,7 +46,7 @@ impl TransactionService {
             amount,
             token_address,
             token_symbol,
-            "confirmed".to_string()
+            TxStatus::Confirmed.to_string()
         ).await
     }
 

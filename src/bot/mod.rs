@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 use teloxide::prelude::*;
-use teloxide::dispatching::{UpdateHandler, UpdateFilterExt};
+use teloxide::dispatching::{ UpdateHandler, UpdateFilterExt };
 use teloxide::utils::command::BotCommands;
 use dptree::case;
 use crate::services::{
@@ -29,7 +29,6 @@ use crate::services::{
 use crate::crypto::Encryptor;
 use crate::config::Config;
 
-/// User dialogue state for interactive flows
 #[derive(Clone, Debug)]
 pub enum DialogueState {
     /// No active dialogue
@@ -58,6 +57,19 @@ pub enum DialogueState {
         wallet_id: String,
         from_token: String,
         to_token: String,
+    },
+    /// Waiting for alert target value (price or percent)
+    WaitingForAlertValue {
+        token_symbol: String,
+        chain: String,
+        alert_kind: String,
+    },
+    /// Pending alert confirmation - stores all details for the confirm button
+    PendingAlertConfirmation {
+        token_symbol: String,
+        chain: String,
+        alert_kind: String,
+        value: f64,
     },
 }
 
@@ -94,18 +106,14 @@ fn schema() -> UpdateHandler<Box<dyn std::error::Error + Send + Sync + 'static>>
         .filter_command::<commands::Command>()
         .endpoint(handlers::handle_command_dispatch);
 
-    let callback_handler = Update::filter_callback_query()
-        .endpoint(callbacks::handle_callback);
+    let callback_handler = Update::filter_callback_query().endpoint(callbacks::handle_callback);
 
     // Handle plain text messages for dialogue flow
     let message_handler = Update::filter_message()
         .filter(|msg: Message| msg.text().is_some() && !msg.text().unwrap().starts_with('/'))
         .endpoint(callbacks::handle_text_message);
 
-    dptree::entry()
-        .branch(command_handler)
-        .branch(callback_handler)
-        .branch(message_handler)
+    dptree::entry().branch(command_handler).branch(callback_handler).branch(message_handler)
 }
 
 pub async fn run_bot(
@@ -123,13 +131,12 @@ pub async fn run_bot(
     security_service: Arc<SecurityService>,
     swap_service: Arc<SwapService>,
     encryptor: Arc<Encryptor>,
-    config: Arc<Config>,
+    config: Arc<Config>
 ) {
     tracing::info!("Starting Telegram bot...");
 
     let bot = Bot::new(bot_token);
 
-    // Set bot commands for slash menu
     if let Err(e) = bot.set_my_commands(commands::Command::bot_commands()).await {
         tracing::warn!("Failed to set bot commands: {}", e);
     } else {
@@ -160,6 +167,5 @@ pub async fn run_bot(
         .dependencies(dptree::deps![state])
         .enable_ctrlc_handler()
         .build()
-        .dispatch()
-        .await;
+        .dispatch().await;
 }

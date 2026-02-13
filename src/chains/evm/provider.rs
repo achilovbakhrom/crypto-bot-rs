@@ -1,3 +1,4 @@
+use crate::enums::TxStatus;
 use async_trait::async_trait;
 use ethers::{
     prelude::*,
@@ -139,7 +140,7 @@ impl EvmProvider {
 
         Ok(TransactionResponse {
             tx_hash,
-            status: "pending".to_string(),
+            status: TxStatus::Pending.to_string(),
         })
     }
 }
@@ -251,7 +252,7 @@ impl ChainProvider for EvmProvider {
 
             Ok(TransactionResponse {
                 tx_hash,
-                status: "pending".to_string(),
+                status: TxStatus::Pending.to_string(),
             })
         }
     }

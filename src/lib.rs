@@ -1,4 +1,5 @@
 pub mod config;
+pub mod enums;
 pub mod error;
 pub mod crypto;
 pub mod db;
@@ -13,4 +14,5 @@ pub mod alert_checker;
 pub mod dex;
 
 pub use config::Config;
+pub use enums::{ Chain, AlertKind, AlertType, TxStatus, ScheduleStatus, RecurringType, SwapStatus };
 pub use error::{ AppError, Result };

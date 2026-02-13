@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::crypto::Encryptor;
 use crate::db::{ WalletRepository, TransactionRepository };
+use crate::enums::{ Chain, TxStatus };
 use crate::error::Result;
 use crate::providers::{ TransactionRequest, TransactionResponse };
 use crate::rpc::RpcManager;
@@ -64,17 +65,10 @@ impl TransferService {
         let response = provider.send_transaction(&private_key, tx_request).await?;
 
         // Log transaction to database
-        let token_symbol = if let Some(ref token_addr) = request.token_address {
-            // Try to get token symbol from the chain's token list
-            // For now, just store as "TOKEN"
+        let token_symbol = if request.token_address.is_some() {
             Some("TOKEN".to_string())
         } else {
-            match wallet.chain.as_str() {
-                "ETH" => Some("ETH".to_string()),
-                "BSC" => Some("BNB".to_string()),
-                "SOLANA" => Some("SOL".to_string()),
-                _ => None,
-            }
+            wallet.chain.parse::<Chain>().ok().map(|c| c.native_symbol().to_string())
         };
 
         self.transaction_repo.create(
@@ -117,7 +111,7 @@ impl TransferService {
                     index,
                     to: recipient.to.clone(),
                     amount: recipient.amount.clone(),
-                    status: "failed".to_string(),
+                    status: TxStatus::Failed.to_string(),
                     tx_hash: None,
                     error: Some("Invalid address format".to_string()),
                 });
@@ -141,15 +135,10 @@ impl TransferService {
             match provider.send_transaction(&private_key, tx_request).await {
                 Ok(response) => {
                     // Log transaction to database
-                    let token_symbol = if let Some(ref token_addr) = recipient.token_address {
+                    let token_symbol = if recipient.token_address.is_some() {
                         Some("TOKEN".to_string())
                     } else {
-                        match wallet.chain.as_str() {
-                            "ETH" => Some("ETH".to_string()),
-                            "BSC" => Some("BNB".to_string()),
-                            "SOLANA" => Some("SOL".to_string()),
-                            _ => None,
-                        }
+                        wallet.chain.parse::<Chain>().ok().map(|c| c.native_symbol().to_string())
                     };
 
                     let _ = self.transaction_repo.create(
@@ -179,7 +168,7 @@ impl TransferService {
                         index,
                         to: recipient.to.clone(),
                         amount: recipient.amount.clone(),
-                        status: "failed".to_string(),
+                        status: TxStatus::Failed.to_string(),
                         tx_hash: None,
                         error: Some(e.to_string()),
                     });

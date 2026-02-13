@@ -31,13 +31,13 @@ impl MigrationTrait for Migration {
                 .col(ColumnDef::new(Swaps::Route).json().null()) // Swap route information (for multi-hop swaps)
                 .col(
                     ColumnDef::new(Swaps::CreatedAt)
-                        .timestamp()
+                        .timestamp_with_time_zone()
                         .default(Expr::current_timestamp())
                         .not_null()
                 )
                 .col(
                     ColumnDef::new(Swaps::UpdatedAt)
-                        .timestamp()
+                        .timestamp_with_time_zone()
                         .default(Expr::current_timestamp())
                         .not_null()
                 )

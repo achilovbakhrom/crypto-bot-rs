@@ -1,2 +1,5 @@
+pub mod bitcoin;
+pub mod cardano;
 pub mod evm;
-pub mod solana; // Temporarily disabled due to dependency conflicts
+pub mod solana;
+pub mod xrp;

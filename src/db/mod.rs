@@ -9,6 +9,9 @@ pub use entity::*;
 mod transaction_repository;
 pub use transaction_repository::TransactionRepository;
 
+mod token_metadata_repository;
+pub use token_metadata_repository::{TokenMetadataRepository, TokenMetadataInput};
+
 pub struct WalletRepository {
     db: DatabaseConnection,
 }
